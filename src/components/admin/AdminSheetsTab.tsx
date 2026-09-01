@@ -193,6 +193,30 @@ function doPost(e) {
     const payload = JSON.parse(e.postData.contents);
     const action = payload.action;
 
+    // Fast Single-User Password Update
+    if (action === "updateUserPassword") {
+      const targetUserId = String(payload.userId || payload.id || payload.registration_id || "");
+      const newPassword = String(payload.newPassword || payload.password || "");
+      const ss = SpreadsheetApp.getActiveSpreadsheet();
+      const sheet = ss.getSheetByName("Users");
+      
+      if (sheet && targetUserId && newPassword) {
+        const lastRow = sheet.getLastRow();
+        if (lastRow > 1) {
+          const idData = sheet.getRange(2, 1, lastRow - 1, 2).getValues();
+          for (let i = 0; i < idData.length; i++) {
+            const rowId = String(idData[i][0]);
+            const rowEmp = String(idData[i][1]);
+            if (rowId === targetUserId || rowEmp === targetUserId) {
+              sheet.getRange(i + 2, 15).setValue(newPassword);
+              return ContentService.createTextOutput(JSON.stringify({ success: true, message: "Password updated in Google Sheet." })).setMimeType(ContentService.MimeType.JSON);
+            }
+          }
+        }
+      }
+      return ContentService.createTextOutput(JSON.stringify({ success: false, message: "User not found for password update." })).setMimeType(ContentService.MimeType.JSON);
+    }
+
     if (action === "exportAllData") {
       const data = payload.data || {};
       if (Array.isArray(data.users)) {
@@ -373,11 +397,22 @@ function replaceSheetData(sheetName, headers, rows, headerColor) {
 
 export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, currentUser }) => {
   const [loading, setLoading] = useState(true);
-  const [webAppUrl, setWebAppUrl] = useState('');
-  const [isLocked, setIsLocked] = useState(true);
-  const [syncEnabled, setSyncEnabled] = useState(true);
-  const [spreadsheetId, setSpreadsheetId] = useState('');
-  const [lastSyncTime, setLastSyncTime] = useState<string | null>(null);
+  
+  // Initialize state directly from LocalStorage (Instant Load on refresh)
+  const [webAppUrl, setWebAppUrl] = useState<string>(() => {
+    return localStorage.getItem('staffsync_sheet_url') || '';
+  });
+  const [isLocked, setIsLocked] = useState<boolean>(() => {
+    const localLocked = localStorage.getItem('staffsync_sheet_locked');
+    return localLocked !== null ? localLocked === 'true' : true;
+  });
+  const [syncEnabled, setSyncEnabled] = useState<boolean>(true);
+  const [spreadsheetId, setSpreadsheetId] = useState<string>(() => {
+    return localStorage.getItem('staffsync_sheet_id') || '';
+  });
+  const [lastSyncTime, setLastSyncTime] = useState<string | null>(() => {
+    return localStorage.getItem('staffsync_last_sync') || null;
+  });
 
   // Status & Progress states
   const [isSaving, setIsSaving] = useState(false);
@@ -395,19 +430,33 @@ export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, curre
 
   const isSuperAdmin = currentUser ? (currentUser.role === 'super_admin' || currentUser.role === 'director') : true;
 
-  // Load Settings on Mount
+  // Load Settings on Mount & Sync LocalStorage with Backend
   const fetchSettings = async () => {
     try {
       setLoading(true);
       const res = await fetch('/api/sheet-settings');
       if (res.ok) {
         const data = await res.json();
-        setWebAppUrl(data.web_app_url || '');
+        const activeUrl = data.web_app_url || localStorage.getItem('staffsync_sheet_url') || '';
+        const activeLocked = data.is_locked !== undefined ? (data.is_locked === 1 || data.is_locked === true) : true;
+        const activeSpreadsheetId = data.spreadsheet_id || localStorage.getItem('staffsync_sheet_id') || '';
+
+        setWebAppUrl(activeUrl);
+        setIsLocked(activeLocked);
         setSyncEnabled(data.sync_enabled === 1 || data.sync_enabled === true);
-        setIsLocked(data.is_locked === undefined ? true : (data.is_locked === 1 || data.is_locked === true));
-        setSpreadsheetId(data.spreadsheet_id || '');
+        setSpreadsheetId(activeSpreadsheetId);
+
+        if (activeUrl) {
+          localStorage.setItem('staffsync_sheet_url', activeUrl);
+          localStorage.setItem('staffsync_sheet_locked', String(activeLocked));
+        }
+        if (activeSpreadsheetId) {
+          localStorage.setItem('staffsync_sheet_id', activeSpreadsheetId);
+        }
         if (data.last_sync_timestamp) {
-          setLastSyncTime(new Date(data.last_sync_timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+          const formatted = new Date(data.last_sync_timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+          setLastSyncTime(formatted);
+          localStorage.setItem('staffsync_last_sync', formatted);
         }
       }
     } catch (e: any) {
@@ -421,16 +470,24 @@ export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, curre
     fetchSettings();
   }, []);
 
-  // Save Settings
+  // Save Settings with Double-Layer Lock (LocalStorage + SQLite)
   const handleSaveSettings = async (overrideLocked?: boolean, customUrl?: string) => {
     setIsSaving(true);
     setSyncSuccessMsg(null);
     setSyncErrorMsg(null);
+    
+    const finalUrl = (customUrl !== undefined ? customUrl : webAppUrl).trim();
+    const finalLocked = overrideLocked !== undefined ? overrideLocked : isLocked;
+
+    // Immediately save to LocalStorage
+    localStorage.setItem('staffsync_sheet_url', finalUrl);
+    localStorage.setItem('staffsync_sheet_locked', String(finalLocked));
+
     try {
       const payload = {
-        web_app_url: customUrl !== undefined ? customUrl : webAppUrl,
+        web_app_url: finalUrl,
         sync_enabled: syncEnabled ? 1 : 0,
-        is_locked: overrideLocked !== undefined ? (overrideLocked ? 1 : 0) : (isLocked ? 1 : 0),
+        is_locked: finalLocked ? 1 : 0,
         spreadsheet_id: spreadsheetId
       };
       const res = await fetch('/api/sheet-settings', {
@@ -440,7 +497,7 @@ export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, curre
       });
       const data = await res.json();
       if (res.ok && data.success) {
-        setSyncSuccessMsg("Settings updated and saved system-wide for all users!");
+        setSyncSuccessMsg("Settings locked and saved permanently system-wide!");
         setTimeout(() => setSyncSuccessMsg(null), 4000);
       } else {
         setSyncErrorMsg(data.message || "Failed to save settings");
@@ -465,7 +522,8 @@ export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, curre
 
   // Test Connection
   const handleTestConnection = async () => {
-    if (!webAppUrl.trim()) {
+    const cleanUrl = webAppUrl.trim();
+    if (!cleanUrl) {
       setTestResult({
         success: false,
         message: "Please enter your Google Apps Script Deployment URL first."
@@ -482,7 +540,7 @@ export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, curre
       const res = await fetch('/api/sheet-settings/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ web_app_url: webAppUrl.trim() })
+        body: JSON.stringify({ web_app_url: cleanUrl })
       });
       const result = await res.json();
 
@@ -494,6 +552,10 @@ export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, curre
           sheetName: result.data?.spreadsheet_name,
           sheetsCount: result.data?.sheets_count
         });
+        if (result.data?.spreadsheet_id) {
+          setSpreadsheetId(result.data.spreadsheet_id);
+          localStorage.setItem('staffsync_sheet_id', result.data.spreadsheet_id);
+        }
       } else {
         setTestResult({
           success: false,
@@ -512,7 +574,8 @@ export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, curre
 
   // Push All Data (Export)
   const handlePushAllData = async () => {
-    if (!webAppUrl.trim()) {
+    const cleanUrl = webAppUrl.trim();
+    if (!cleanUrl) {
       alert("Please paste and configure your Google Apps Script Deployment URL first.");
       return;
     }
@@ -524,8 +587,9 @@ export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, curre
       const res = await fetch('/api/sheet-settings/export-all', { method: 'POST' });
       const data = await res.json();
       if (res.ok && data.success) {
-        const time = new Date().toLocaleTimeString();
+        const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         setLastSyncTime(time);
+        localStorage.setItem('staffsync_last_sync', time);
         setSyncSuccessMsg(`Full database snapshot exported to Google Sheet successfully at ${time}!`);
         if (onRefresh) onRefresh();
       } else {
@@ -540,7 +604,8 @@ export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, curre
 
   // Pull All Data (Import)
   const handlePullAllData = async () => {
-    if (!webAppUrl.trim()) {
+    const cleanUrl = webAppUrl.trim();
+    if (!cleanUrl) {
       alert("Please configure your Google Apps Script Deployment URL first.");
       return;
     }
@@ -557,8 +622,9 @@ export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, curre
       const res = await fetch('/api/sheet-settings/pull-all', { method: 'POST' });
       const data = await res.json();
       if (res.ok && data.success) {
-        const time = new Date().toLocaleTimeString();
+        const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         setLastSyncTime(time);
+        localStorage.setItem('staffsync_last_sync', time);
         setSyncSuccessMsg("Data successfully pulled from Google Sheets into the application!");
         if (onRefresh) onRefresh();
       } else {
@@ -571,14 +637,12 @@ export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, curre
     }
   };
 
-  // Copy code.gs
   const handleCopyCode = () => {
     navigator.clipboard.writeText(CODE_GS_SCRIPT);
     setCopiedScript(true);
     setTimeout(() => setCopiedScript(false), 3000);
   };
 
-  // Copy Deploy URL
   const handleCopyUrl = () => {
     if (!webAppUrl) return;
     navigator.clipboard.writeText(webAppUrl);
@@ -586,7 +650,6 @@ export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, curre
     setTimeout(() => setCopiedUrl(false), 3000);
   };
 
-  // Construct Direct Google Sheet Link
   const directSheetLink = spreadsheetId 
     ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit` 
     : 'https://docs.google.com/spreadsheets';
@@ -611,7 +674,7 @@ export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, curre
                 </span>
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                Synchronize punches, staff master records, sites, and payroll directly to your Google Spreadsheet
+                Synchronize attendance punches, staff records, sites, and credentials directly to Google Sheets
               </p>
             </div>
           </div>
@@ -646,7 +709,7 @@ export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, curre
               <span>Real-Time Bi-Directional Auto Sync</span>
             </div>
             <p className="text-slate-500 dark:text-slate-400 text-[11px]">
-              Every attendance punch, staff change, or site update automatically streams to Google Sheets in real time.
+              Every attendance punch, staff change, password update, or site radius change automatically syncs to Google Sheets in real time.
             </p>
           </div>
 
@@ -684,7 +747,7 @@ export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, curre
         )}
       </div>
 
-      {/* CENTERPIECE: Google Apps Script Web App Deployment URL Bar with Admin Lock */}
+      {/* CENTERPIECE: Deployment URL Bar with Persistent Double-Lock */}
       <div className="bg-white dark:bg-slate-900 border-2 border-emerald-500/30 dark:border-emerald-500/20 rounded-3xl p-5 shadow-sm space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-3">
           <div>
@@ -696,7 +759,7 @@ export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, curre
               {isLocked ? (
                 <span className="px-2 py-0.5 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 text-[10px] font-bold rounded-md flex items-center gap-1">
                   <Lock className="w-3 h-3 text-slate-500" />
-                  <span>Locked (Protected)</span>
+                  <span>Locked (Permanent)</span>
                 </span>
               ) : (
                 <span className="px-2 py-0.5 bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 text-[10px] font-bold rounded-md flex items-center gap-1 animate-pulse">
@@ -706,7 +769,7 @@ export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, curre
               )}
             </div>
             <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-              This deployment link is stored centrally and remains active for all users and staff members across the entire system.
+              This deployment URL is saved securely in your browser and backend database — it will never disappear upon page refresh.
             </p>
           </div>
 
@@ -759,7 +822,7 @@ export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, curre
               )}
             </div>
 
-            {/* Quick Actions for the Bar */}
+            {/* Quick Actions */}
             <div className="flex items-center gap-2 shrink-0">
               <button
                 type="button"
@@ -794,7 +857,7 @@ export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, curre
               {!isLocked && (
                 <button
                   type="button"
-                  onClick={() => handleSaveSettings()}
+                  onClick={() => handleSaveSettings(true)}
                   disabled={isSaving}
                   className="px-4 py-2.5 bg-slate-900 hover:bg-black dark:bg-white dark:hover:bg-slate-100 text-white dark:text-slate-900 rounded-xl font-bold flex items-center gap-1.5 shadow-xs cursor-pointer"
                 >
@@ -805,7 +868,7 @@ export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, curre
             </div>
           </div>
 
-          {/* Test Connection Diagnostics Feedback */}
+          {/* Test Connection Diagnostics */}
           {testResult && (
             <div className={`p-3 rounded-2xl border text-xs flex items-start gap-2.5 animate-fadeIn ${
               testResult.success 
@@ -893,11 +956,10 @@ export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, curre
         </button>
       </div>
 
-      {/* ======================= TAB 1: SYNC OPERATIONS ======================= */}
+      {/* TAB 1: SYNC OPERATIONS */}
       {activeSubTab === 'control' && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           
-          {/* Card 1: Push All App Data */}
           <div className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-3xl p-5 shadow-xs flex flex-col justify-between space-y-4">
             <div className="space-y-2">
               <div className="w-10 h-10 rounded-2xl bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 flex items-center justify-center font-bold">
@@ -930,7 +992,6 @@ export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, curre
             </button>
           </div>
 
-          {/* Card 2: Pull Data from Google Sheet */}
           <div className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-3xl p-5 shadow-xs flex flex-col justify-between space-y-4">
             <div className="space-y-2">
               <div className="w-10 h-10 rounded-2xl bg-blue-50 dark:bg-blue-950/60 text-blue-600 flex items-center justify-center font-bold">
@@ -963,7 +1024,6 @@ export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, curre
             </button>
           </div>
 
-          {/* Quick Links & Direct Sheet Launcher */}
           <div className="md:col-span-2 bg-gradient-to-r from-slate-900 to-slate-800 text-white rounded-3xl p-5 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4">
             <div className="flex items-center gap-3">
               <div className="w-11 h-11 rounded-2xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold shrink-0">
@@ -989,7 +1049,7 @@ export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, curre
         </div>
       )}
 
-      {/* ======================= TAB 2: CODE.GS SCRIPT ======================= */}
+      {/* TAB 2: CODE.GS SCRIPT */}
       {activeSubTab === 'code' && (
         <div className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-3xl p-5 shadow-xs space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-3">
@@ -1022,7 +1082,7 @@ export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, curre
         </div>
       )}
 
-      {/* ======================= TAB 3: 5-MINUTE SETUP GUIDE ======================= */}
+      {/* TAB 3: 5-MINUTE SETUP GUIDE */}
       {activeSubTab === 'guide' && (
         <div className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-3xl p-5 shadow-xs space-y-5">
           <div className="space-y-1">
@@ -1037,7 +1097,6 @@ export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, curre
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             
-            {/* Step 1 */}
             <div className="p-4 bg-slate-50 dark:bg-slate-800/60 rounded-2xl border border-slate-200 dark:border-slate-700 space-y-2">
               <div className="flex items-center gap-2">
                 <span className="w-6 h-6 rounded-full bg-emerald-600 text-white font-bold flex items-center justify-center text-xs">1</span>
@@ -1048,7 +1107,6 @@ export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, curre
               </p>
             </div>
 
-            {/* Step 2 */}
             <div className="p-4 bg-slate-50 dark:bg-slate-800/60 rounded-2xl border border-slate-200 dark:border-slate-700 space-y-2">
               <div className="flex items-center gap-2">
                 <span className="w-6 h-6 rounded-full bg-emerald-600 text-white font-bold flex items-center justify-center text-xs">2</span>
@@ -1059,7 +1117,6 @@ export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, curre
               </p>
             </div>
 
-            {/* Step 3 */}
             <div className="p-4 bg-slate-50 dark:bg-slate-800/60 rounded-2xl border border-slate-200 dark:border-slate-700 space-y-2">
               <div className="flex items-center gap-2">
                 <span className="w-6 h-6 rounded-full bg-emerald-600 text-white font-bold flex items-center justify-center text-xs">3</span>
@@ -1070,7 +1127,6 @@ export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, curre
               </p>
             </div>
 
-            {/* Step 4 */}
             <div className="p-4 bg-slate-50 dark:bg-slate-800/60 rounded-2xl border border-slate-200 dark:border-slate-700 space-y-2">
               <div className="flex items-center gap-2">
                 <span className="w-6 h-6 rounded-full bg-emerald-600 text-white font-bold flex items-center justify-center text-xs">4</span>
@@ -1081,7 +1137,6 @@ export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, curre
               </p>
             </div>
 
-            {/* Step 5 */}
             <div className="md:col-span-2 p-4 bg-emerald-50 dark:bg-emerald-950/40 rounded-2xl border border-emerald-200 dark:border-emerald-800 space-y-2">
               <div className="flex items-center gap-2">
                 <span className="w-6 h-6 rounded-full bg-emerald-600 text-white font-bold flex items-center justify-center text-xs">5</span>
@@ -1096,7 +1151,7 @@ export const AdminSheetsTab: React.FC<AdminSheetsTabProps> = ({ onRefresh, curre
         </div>
       )}
 
-      {/* ======================= TAB 4: DATABASE SCHEMA (9 SHEETS) ======================= */}
+      {/* TAB 4: DATABASE SCHEMA (9 SHEETS) */}
       {activeSubTab === 'schema' && (
         <div className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-3xl p-5 shadow-xs space-y-4">
           <div className="space-y-1">
