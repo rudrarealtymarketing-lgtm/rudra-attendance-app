@@ -518,34 +518,73 @@ async function startServer() {
       res.status(401).json({ success: false, message: "Incorrect password." });
     }
   });
-// Change Password API (Director, Admin & Staff)
-  app.post(["/api/users/change-password", "/api/change-password", "/api/users/:id/change-password"], (req, res) => {
-    const { userId, currentPassword, newPassword } = req.body;
-    const targetId = req.params.id || userId;
 
-    if (!targetId || !newPassword || !newPassword.trim()) {
-      return res.status(400).json({ success: false, message: "User ID and New Password are required." });
+  // =========================================================================
+  // UNIVERSAL PASSWORD CHANGE HANDLER (ALL ROLES: ADMIN, DIRECTOR, STAFF)
+  // Supports PUT / POST, all route variations and parameter names
+  // =========================================================================
+  const handleUniversalPasswordChange = (req: express.Request, res: express.Response) => {
+    const { 
+      userId, id, user_id, registration_id, email,
+      currentPassword, current_password, oldPassword, old_password,
+      newPassword, new_password, password 
+    } = req.body;
+
+    const target = req.params.id || userId || id || user_id || registration_id || email;
+    const cleanNewPass = (newPassword || new_password || password || "").trim();
+    const cleanCurrPass = (currentPassword || current_password || oldPassword || old_password || "").trim();
+
+    if (!target) {
+      return res.status(400).json({ success: false, message: "User identification (ID / Reg ID / Email) is required." });
+    }
+    if (!cleanNewPass) {
+      return res.status(400).json({ success: false, message: "New password cannot be empty." });
     }
 
     try {
-      const user = db.prepare("SELECT * FROM users WHERE id = ? OR registration_id = ?").get(targetId, targetId) as any;
+      const user = db.prepare(`
+        SELECT * FROM users 
+        WHERE id = ? 
+           OR registration_id = ? 
+           OR LOWER(email) = LOWER(?) 
+           OR LOWER(username) = LOWER(?)
+      `).get(target, target, target, target) as any;
+
       if (!user) {
-        return res.status(404).json({ success: false, message: "User not found." });
+        return res.status(404).json({ success: false, message: "User account not found." });
       }
 
-      if (currentPassword && currentPassword.trim() && user.password && user.password !== currentPassword.trim()) {
-        return res.status(400).json({ success: false, message: "Current password does not match." });
+      // Check current password if provided and user has existing password
+      if (cleanCurrPass && user.password && user.password !== cleanCurrPass) {
+        return res.status(400).json({ success: false, message: "Current password is incorrect." });
       }
 
-      db.prepare("UPDATE users SET password = ? WHERE id = ?").run(newPassword.trim(), user.id);
+      db.prepare("UPDATE users SET password = ? WHERE id = ?").run(cleanNewPass, user.id);
       backupDatabaseToJson();
       triggerLiveSync('change_password');
 
-      res.json({ success: true, message: "Password updated successfully!" });
+      return res.json({ 
+        success: true, 
+        message: "Password updated successfully!",
+        userId: user.id 
+      });
     } catch (e: any) {
-      res.status(500).json({ success: false, message: e.message });
+      return res.status(500).json({ success: false, message: e.message || "Failed to update password." });
     }
-  });
+  };
+
+  // Mount universal password endpoints for ALL methods and route paths
+  app.post("/api/users/change-password", handleUniversalPasswordChange);
+  app.put("/api/users/change-password", handleUniversalPasswordChange);
+  app.post("/api/change-password", handleUniversalPasswordChange);
+  app.put("/api/change-password", handleUniversalPasswordChange);
+  app.post("/api/auth/change-password", handleUniversalPasswordChange);
+  app.put("/api/auth/change-password", handleUniversalPasswordChange);
+  app.post("/api/users/:id/change-password", handleUniversalPasswordChange);
+  app.put("/api/users/:id/change-password", handleUniversalPasswordChange);
+  app.post("/api/users/:id/password", handleUniversalPasswordChange);
+  app.put("/api/users/:id/password", handleUniversalPasswordChange);
+
   // Users & Staff
   app.get("/api/users", (req, res) => {
     const { siteName } = req.query;
