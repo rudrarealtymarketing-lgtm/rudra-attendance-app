@@ -1130,38 +1130,115 @@ async function startServer() {
     "/api/super_admin/sheet-settings/export"
   ], handleExportAllToSheets);
 
-  app.post("/api/sheet-settings/pull-all", async (req, res) => {
+app.post("/api/sheet-settings/pull-all", async (req, res) => {
     try {
       const settings = db.prepare("SELECT * FROM sheet_settings WHERE id = 1").get() as any;
-      if (!settings || !settings.web_app_url) return res.status(400).json({ success: false, message: "Deployment URL missing." });
+      const targetUrl = settings?.web_app_url || "https://script.google.com/macros/s/AKfycby-QMBlqhuh40b0MsMWlwRHKhzpvLmc1He1jBsh6E4g1jxWHScmU45jmla1DmAQ2v_Nrg/exec";
 
-      const response = await fetch(`${settings.web_app_url}?action=getAllData`, { redirect: "follow" });
+      if (!targetUrl) return res.status(400).json({ success: false, message: "Deployment URL missing." });
+
+      const response = await fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getAllData`, { redirect: "follow" });
       const resJson = await response.json();
+
       if (resJson.success && resJson.data) {
         const d = resJson.data;
+
+        // Lock URL into database
+        db.prepare(`
+          INSERT INTO sheet_settings (id, web_app_url, sync_enabled, is_locked)
+          VALUES (1, ?, 1, 1)
+          ON CONFLICT(id) DO UPDATE SET web_app_url = excluded.web_app_url
+        `).run(targetUrl);
+
+        // 1. Restore Users
         if (Array.isArray(d.users) && d.users.length > 0) {
           for (const u of d.users) {
-            if (u.name && u.role !== 'super_admin') {
+            const empName = u.name || u.full_name || u['Full Name'];
+            const regCode = u.registration_id || u.employee_code || u['Employee Code'] || u.user_id || u['User ID'];
+            if (empName && u.role !== 'super_admin') {
               try {
                 db.prepare(`
-                  INSERT INTO users (registration_id, name, email, phone, role, site_name, designation, monthly_salary)
-                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                  INSERT INTO users (registration_id, name, username, email, phone, role, site_name, designation, monthly_salary, password, work_start_time, work_end_time)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                   ON CONFLICT(registration_id) DO UPDATE SET
                     name = excluded.name,
+                    username = excluded.username,
                     email = excluded.email,
                     phone = excluded.phone,
+                    role = excluded.role,
                     site_name = excluded.site_name,
                     designation = excluded.designation,
-                    monthly_salary = excluded.monthly_salary
-                `).run(u.registration_id || null, u.name, u.email || null, u.phone || null, u.role || 'user', u.site_name || 'ARAMUS RUDRA', u.designation || 'Staff', Number(u.monthly_salary) || 0);
+                    monthly_salary = excluded.monthly_salary,
+                    password = COALESCE(excluded.password, users.password),
+                    work_start_time = excluded.work_start_time,
+                    work_end_time = excluded.work_end_time
+                `).run(
+                  regCode || null, empName, u.username || null, u.email || null, u.phone || null,
+                  u.role || 'user', u.site_name || u.branch___site || 'ARAMUS RUDRA', u.designation || 'Staff',
+                  Number(u.monthly_salary || u.monthly_salary_____) || 0, u.password || 'password123',
+                  u.work_start_time || u.work_start || '10:00', u.work_end_time || u.work_end || '19:00'
+                );
               } catch (_) {}
             }
           }
         }
+
+        // 2. Restore Sites
+        if (Array.isArray(d.sites) && d.sites.length > 0) {
+          for (const s of d.sites) {
+            const sName = s.name || s.site_name || s['Site Name'];
+            if (sName) {
+              try {
+                db.prepare(`
+                  INSERT INTO sites (name, address, latitude, longitude, radius, work_start_time, work_end_time)
+                  VALUES (?, ?, ?, ?, ?, ?, ?)
+                  ON CONFLICT(name) DO UPDATE SET
+                    address = excluded.address,
+                    latitude = excluded.latitude,
+                    longitude = excluded.longitude,
+                    radius = excluded.radius,
+                    work_start_time = excluded.work_start_time,
+                    work_end_time = excluded.work_end_time
+                `).run(
+                  sName, s.address || s['Address'] || '', Number(s.latitude || s['Latitude']) || 19.04574,
+                  Number(s.longitude || s['Longitude']) || 73.08025, Number(s.radius || s.radius__meters_ || s['Radius (Meters)']) || 20,
+                  s.work_start_time || s.shift_start || '10:00', s.work_end_time || s.shift_end || '19:00'
+                );
+              } catch (_) {}
+            }
+          }
+        }
+
+        // 3. Restore Attendance
+        if (Array.isArray(d.attendance) && d.attendance.length > 0) {
+          for (const a of d.attendance) {
+            const regId = a.registration_id || a.employee_code || a['Employee Code'];
+            const aName = a.name || a['Name'];
+            const user = db.prepare("SELECT id FROM users WHERE registration_id = ? OR name = ?").get(regId, aName) as any;
+            if (user && (a.date || a['Date'])) {
+              const attDate = a.date || a['Date'];
+              const existing = db.prepare("SELECT id FROM attendance WHERE user_id = ? AND date = ?").get(user.id, attDate);
+              if (!existing) {
+                try {
+                  db.prepare(`
+                    INSERT INTO attendance (user_id, date, check_in, check_out, status, method, location, late_minutes, overtime_hours)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  `).run(
+                    user.id, attDate, a.check_in || a['Check In'] || null, a.check_out || a['Check Out'] || null,
+                    a.status === 'Present' ? 'P' : (a.status === 'Late' ? 'L' : (a.status || 'P')),
+                    a.method || 'app', a.site_name || a.branch___site || 'ARAMUS RUDRA',
+                    Number(a.late_minutes || a.late__min_) || 0, Number(a.overtime_hours || a.overtime__hrs_) || 0
+                  );
+                } catch (_) {}
+              }
+            }
+          }
+        }
+
         backupDatabaseToJson();
-        return res.json({ success: true, message: "Successfully pulled data from Google Sheets." });
+        return res.json({ success: true, message: "Successfully pulled and restored all data from Google Sheets!" });
       }
-      return res.status(500).json({ success: false, message: "Could not read data from Google Sheet." });
+      return res.status(500).json({ success: false, message: "Could not parse response from Google Sheet." });
     } catch (e: any) {
       return res.status(500).json({ success: false, message: e.message });
     }
