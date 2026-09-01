@@ -850,29 +850,46 @@ async function startServer() {
       res.status(500).json({ success: false, message: e.message });
     }
   });
-// Manual Attendance Entry / Override by Admin
+// Manual Attendance Entry / Override by Admin (Universal User Lookup)
   const handleManualAttendance = (req: express.Request, res: express.Response) => {
     const { 
-      userId, user_id, registration_id, date, 
-      checkIn, check_in, checkOut, check_out, 
+      userId, user_id, registration_id, name, user_name, employee_code,
+      date, checkIn, check_in, checkOut, check_out, 
       status, remarks, reason, site_name, location 
     } = req.body;
 
-    const targetUser = userId || user_id || registration_id;
+    const rawTarget = String(userId || user_id || registration_id || employee_code || name || user_name || "").trim();
     const targetDate = date || new Date().toISOString().split('T')[0];
 
-    if (!targetUser) {
-      return res.status(400).json({ success: false, message: "User ID is required for manual punch." });
+    if (!rawTarget) {
+      return res.status(400).json({ success: false, message: "Please select a staff member." });
     }
 
     try {
-      const user = db.prepare("SELECT * FROM users WHERE id = ? OR registration_id = ?").get(targetUser, targetUser) as any;
-      if (!user) {
-        return res.status(404).json({ success: false, message: "Staff member not found." });
+      // Robust multi-match query (by ID, registration_id, username, or Full Name)
+      let user = db.prepare(`
+        SELECT * FROM users 
+        WHERE id = ? 
+           OR registration_id = ? 
+           OR LOWER(registration_id) = LOWER(?)
+           OR LOWER(name) = LOWER(?)
+           OR LOWER(username) = LOWER(?)
+      `).get(rawTarget, rawTarget, rawTarget, rawTarget, rawTarget) as any;
+
+      // Dropdown pattern fallback (e.g. "[EMP-0001] Vimlesh Namdev")
+      if (!user && rawTarget.includes("[")) {
+        const extractedCode = rawTarget.split("[")[1]?.split("]")[0]?.trim();
+        if (extractedCode) {
+          user = db.prepare("SELECT * FROM users WHERE registration_id = ? OR LOWER(registration_id) = LOWER(?)").get(extractedCode, extractedCode) as any;
+        }
       }
 
-      const finalCheckIn = checkIn || check_in || "10:00";
-      const finalCheckOut = checkOut || check_out || null;
+      if (!user) {
+        return res.status(404).json({ success: false, message: "Staff member not found in database." });
+      }
+
+      const finalCheckIn = checkIn || check_in || "09:00";
+      const finalCheckOut = checkOut || check_out || "19:00";
       const finalStatus = status || "P";
       const finalReason = remarks || reason || "Manual Punch by Admin";
       const finalSite = site_name || user.site_name || "ARAMUS RUDRA";
@@ -882,9 +899,9 @@ async function startServer() {
       if (existing) {
         db.prepare(`
           UPDATE attendance 
-          SET check_in = ?, check_out = ?, status = ?, late_reason = ?, method = 'manual'
+          SET check_in = ?, check_out = ?, status = ?, late_reason = ?, method = 'manual', location = COALESCE(?, location)
           WHERE id = ?
-        `).run(finalCheckIn, finalCheckOut, finalStatus, finalReason, existing.id);
+        `).run(finalCheckIn, finalCheckOut, finalStatus, finalReason, location || finalSite, existing.id);
       } else {
         db.prepare(`
           INSERT INTO attendance (user_id, date, check_in, check_out, status, method, late_reason, location)
@@ -896,7 +913,7 @@ async function startServer() {
       appendAttendanceLogLive(user.id, targetDate, finalCheckIn, finalStatus, 'manual', null, finalCheckOut || undefined);
       triggerLiveSync('manual_attendance');
 
-      return res.json({ success: true, message: "Manual attendance recorded successfully!" });
+      return res.json({ success: true, message: `Attendance saved successfully for ${user.name}!` });
     } catch (e: any) {
       return res.status(500).json({ success: false, message: e.message });
     }
