@@ -850,7 +850,64 @@ async function startServer() {
       res.status(500).json({ success: false, message: e.message });
     }
   });
+// Manual Attendance Entry / Override by Admin
+  const handleManualAttendance = (req: express.Request, res: express.Response) => {
+    const { 
+      userId, user_id, registration_id, date, 
+      checkIn, check_in, checkOut, check_out, 
+      status, remarks, reason, site_name, location 
+    } = req.body;
 
+    const targetUser = userId || user_id || registration_id;
+    const targetDate = date || new Date().toISOString().split('T')[0];
+
+    if (!targetUser) {
+      return res.status(400).json({ success: false, message: "User ID is required for manual punch." });
+    }
+
+    try {
+      const user = db.prepare("SELECT * FROM users WHERE id = ? OR registration_id = ?").get(targetUser, targetUser) as any;
+      if (!user) {
+        return res.status(404).json({ success: false, message: "Staff member not found." });
+      }
+
+      const finalCheckIn = checkIn || check_in || "10:00";
+      const finalCheckOut = checkOut || check_out || null;
+      const finalStatus = status || "P";
+      const finalReason = remarks || reason || "Manual Punch by Admin";
+      const finalSite = site_name || user.site_name || "ARAMUS RUDRA";
+
+      const existing = db.prepare("SELECT * FROM attendance WHERE user_id = ? AND date = ?").get(user.id, targetDate) as any;
+
+      if (existing) {
+        db.prepare(`
+          UPDATE attendance 
+          SET check_in = ?, check_out = ?, status = ?, late_reason = ?, method = 'manual'
+          WHERE id = ?
+        `).run(finalCheckIn, finalCheckOut, finalStatus, finalReason, existing.id);
+      } else {
+        db.prepare(`
+          INSERT INTO attendance (user_id, date, check_in, check_out, status, method, late_reason, location)
+          VALUES (?, ?, ?, ?, ?, 'manual', ?, ?)
+        `).run(user.id, targetDate, finalCheckIn, finalCheckOut, finalStatus, finalReason, location || finalSite);
+      }
+
+      backupDatabaseToJson();
+      appendAttendanceLogLive(user.id, targetDate, finalCheckIn, finalStatus, 'manual', null, finalCheckOut || undefined);
+      triggerLiveSync('manual_attendance');
+
+      return res.json({ success: true, message: "Manual attendance recorded successfully!" });
+    } catch (e: any) {
+      return res.status(500).json({ success: false, message: e.message });
+    }
+  };
+
+  app.all([
+    "/api/attendance/manual",
+    "/api/super_admin/attendance/manual",
+    "/api/attendance/override",
+    "/api/super_admin/attendance/override"
+  ], handleManualAttendance);
   // Sheet Settings API
   app.get("/api/sheet-settings", (req, res) => {
     try {
