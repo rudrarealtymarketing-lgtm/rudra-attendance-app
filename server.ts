@@ -922,73 +922,105 @@ async function startServer() {
     }
   });
 
-  // Sites / Geofence APIs
+// =========================================================================
+  // SITES & GEOFENCE APIS (Universal ID / Name Update with Full Fallback)
+  // =========================================================================
   app.get("/api/sites", (req, res) => {
     res.json(db.prepare("SELECT * FROM sites ORDER BY name ASC").all());
   });
-// Create New Site
-  app.post(["/api/sites", "/api/super_admin/sites"], (req, res) => {
-    const { name, address, latitude, longitude, radius } = req.body;
-    try {
-      const result = db.prepare("INSERT INTO sites (name, address, latitude, longitude, radius) VALUES (?, ?, ?, ?, ?)").run(name, address || null, Number(latitude), Number(longitude), Number(radius) || 150);
-      backupDatabaseToJson();
-      triggerLiveSync('sites');
-      res.json({ success: true, id: result.lastInsertRowid });
-    } catch (e: any) {
-      res.status(400).json({ success: false, message: e.message });
-    }
-  });
 
-  // Update Existing Site / Geofence Location & Radius
-  const handleUpdateSite = (req: express.Request, res: express.Response) => {
-    const { id } = req.params;
-    const { name, address, latitude, longitude, radius, work_start_time, work_end_time } = req.body;
+  const handleCreateOrUpdateSite = (req: express.Request, res: express.Response) => {
+    const { id, name, site_name, address, latitude, longitude, radius, work_start_time, work_end_time } = req.body;
+    const targetId = req.params.id || id;
+    const targetName = (name || site_name || "").trim();
 
     try {
-      const existingSite = db.prepare("SELECT * FROM sites WHERE id = ?").get(id) as any;
-      if (!existingSite) {
-        return res.status(404).json({ success: false, message: "Site not found" });
+      let existingSite: any = null;
+      if (targetId) {
+        existingSite = db.prepare("SELECT * FROM sites WHERE id = ?").get(targetId);
+      }
+      if (!existingSite && targetName) {
+        existingSite = db.prepare("SELECT * FROM sites WHERE LOWER(name) = LOWER(?)").get(targetName);
       }
 
-      db.prepare(`
-        UPDATE sites
-        SET name = COALESCE(?, name),
-            address = COALESCE(?, address),
-            latitude = COALESCE(?, latitude),
-            longitude = COALESCE(?, longitude),
-            radius = COALESCE(?, radius),
-            work_start_time = COALESCE(?, work_start_time),
-            work_end_time = COALESCE(?, work_end_time)
-        WHERE id = ?
-      `).run(
-        name ? name.trim() : null,
-        address !== undefined ? address : null,
-        latitude !== undefined ? Number(latitude) : null,
-        longitude !== undefined ? Number(longitude) : null,
-        radius !== undefined ? Number(radius) : null,
-        work_start_time !== undefined ? work_start_time : null,
-        work_end_time !== undefined ? work_end_time : null,
-        id
-      );
+      if (existingSite) {
+        const cleanLat = (latitude !== undefined && latitude !== null && latitude !== '') ? Number(latitude) : existingSite.latitude;
+        const cleanLng = (longitude !== undefined && longitude !== null && longitude !== '') ? Number(longitude) : existingSite.longitude;
+        const cleanRadius = (radius !== undefined && radius !== null && radius !== '') ? Number(radius) : (existingSite.radius || 150);
 
-      backupDatabaseToJson();
-      triggerLiveSync('update_site');
+        db.prepare(`
+          UPDATE sites
+          SET name = COALESCE(?, name),
+              address = COALESCE(?, address),
+              latitude = ?,
+              longitude = ?,
+              radius = ?,
+              work_start_time = COALESCE(?, work_start_time),
+              work_end_time = COALESCE(?, work_end_time)
+          WHERE id = ?
+        `).run(
+          targetName || null,
+          address !== undefined ? address : null,
+          cleanLat,
+          cleanLng,
+          cleanRadius,
+          work_start_time || null,
+          work_end_time || null,
+          existingSite.id
+        );
 
-      const updatedSite = db.prepare("SELECT * FROM sites WHERE id = ?").get(id);
-      res.json({ success: true, site: updatedSite, message: "Site geofence updated successfully!" });
+        backupDatabaseToJson();
+        triggerLiveSync('update_site');
+
+        const updated = db.prepare("SELECT * FROM sites WHERE id = ?").get(existingSite.id);
+        return res.json({ success: true, site: updated, message: "Site geofence updated successfully!" });
+      } else {
+        if (!targetName) {
+          return res.status(400).json({ success: false, message: "Site Name is required" });
+        }
+        const cleanLat = latitude ? Number(latitude) : 23.0225;
+        const cleanLng = longitude ? Number(longitude) : 72.5714;
+        const cleanRadius = radius ? Number(radius) : 150;
+
+        const result = db.prepare(`
+          INSERT INTO sites (name, address, latitude, longitude, radius, work_start_time, work_end_time)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          targetName,
+          address || null,
+          cleanLat,
+          cleanLng,
+          cleanRadius,
+          work_start_time || '10:00',
+          work_end_time || '19:00'
+        );
+
+        backupDatabaseToJson();
+        triggerLiveSync('create_site');
+
+        const newSite = db.prepare("SELECT * FROM sites WHERE id = ?").get(result.lastInsertRowid);
+        return res.json({ success: true, id: result.lastInsertRowid, site: newSite, message: "Site created successfully!" });
+      }
     } catch (e: any) {
-      res.status(500).json({ success: false, message: e.message });
+      return res.status(500).json({ success: false, message: e.message });
     }
   };
 
-  app.put("/api/sites/:id", handleUpdateSite);
-  app.put("/api/super_admin/sites/:id", handleUpdateSite);
-  app.post("/api/sites/:id/update", handleUpdateSite);
+  app.post("/api/sites", handleCreateOrUpdateSite);
+  app.post("/api/super_admin/sites", handleCreateOrUpdateSite);
+  app.put("/api/sites", handleCreateOrUpdateSite);
+  app.put("/api/super_admin/sites", handleCreateOrUpdateSite);
+  app.put("/api/sites/:id", handleCreateOrUpdateSite);
+  app.put("/api/super_admin/sites/:id", handleCreateOrUpdateSite);
+  app.post("/api/sites/:id", handleCreateOrUpdateSite);
+  app.post("/api/sites/:id/update", handleCreateOrUpdateSite);
+
+  app.delete(["/api/sites/:id", "/api/super_admin/sites/:id"], (req, res) => {
     try {
       db.prepare("DELETE FROM sites WHERE id = ?").run(req.params.id);
       backupDatabaseToJson();
       triggerLiveSync('delete_site');
-      res.json({ success: true });
+      res.json({ success: true, message: "Site deleted successfully" });
     } catch (e: any) {
       res.status(500).json({ success: false, message: e.message });
     }
