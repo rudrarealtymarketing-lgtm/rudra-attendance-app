@@ -231,14 +231,50 @@ const settingsTableInfo = db.prepare("PRAGMA table_info(sheet_settings)").all() 
 if (!settingsTableInfo.some(col => col.name === 'web_app_url')) runMigration("add web_app_url", "ALTER TABLE sheet_settings ADD COLUMN web_app_url TEXT");
 if (!settingsTableInfo.some(col => col.name === 'is_locked')) runMigration("add is_locked", "ALTER TABLE sheet_settings ADD COLUMN is_locked INTEGER DEFAULT 1");
 
-// Seed basic Admin if database is freshly created
+// Seed Departments, Master Designations, Super Admin & Director
+const deptCount = (db.prepare("SELECT COUNT(*) as count FROM departments").get() as any).count;
+if (deptCount === 0) {
+  const depts = [
+    ["Executive & Management", "Executive Leadership & Board"],
+    ["Civil & Construction", "Site Engineers, Supervisors & Project Managers"],
+    ["Sales & Marketing", "Real Estate Sales Executives & CRM"],
+    ["Accounts & Finance", "Billing, Payroll & Accounts Team"],
+    ["Administration & HR", "General Office Administration & Operations"]
+  ];
+  const stmt = db.prepare("INSERT INTO departments (name, description) VALUES (?, ?)");
+  for (const d of depts) { stmt.run(d[0], d[1]); }
+}
+
+const desigCount = (db.prepare("SELECT COUNT(*) as count FROM designations").get() as any).count;
+if (desigCount === 0) {
+  const defaultDesignations = [
+    "Managing Director (MD)",
+    "Executive Director / Partner",
+    "Chief Executive Officer (CEO)",
+    "Project Manager / Construction Head",
+    "Senior Site Engineer",
+    "Junior Site Engineer",
+    "Site Supervisor",
+    "Safety Officer",
+    "Quality Control (QC) Engineer",
+    "Sales Manager",
+    "Sales Executive",
+    "Accountant",
+    "HR Executive",
+    "Office Assistant"
+  ];
+  const stmt = db.prepare("INSERT OR IGNORE INTO designations (name) VALUES (?)");
+  for (const name of defaultDesignations) { stmt.run(name); }
+}
+
 const existingAdmin = db.prepare("SELECT id FROM users WHERE role = 'super_admin' OR registration_id = 'ADMIN-01'").get();
 if (!existingAdmin) {
-  const deptCount = (db.prepare("SELECT COUNT(*) as count FROM departments").get() as any).count;
-  if (deptCount === 0) {
-    db.prepare("INSERT INTO departments (name, description) VALUES (?, ?)").run("Executive & Management", "Executive Leadership & Board");
-  }
   db.prepare("INSERT INTO users (registration_id, name, email, role, department_id, password, designation, allowed_devices) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run("ADMIN-01", "Abhishek Bhatt (Admin)", "admin@rudra.com", "super_admin", 1, "admin123", "Chief Executive Officer (CEO)", 99);
+}
+
+const existingDirector = db.prepare("SELECT id FROM users WHERE role = 'director' OR registration_id = 'DIR-01'").get();
+if (!existingDirector) {
+  db.prepare("INSERT INTO users (registration_id, name, email, role, department_id, password, designation, allowed_devices) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run("DIR-01", "Director / Partner", "director@rudra.com", "director", 1, "director123", "Managing Director (MD)", 99);
 }
 
 const settingsCount = db.prepare("SELECT COUNT(*) as count FROM sheet_settings").get() as { count: number };
