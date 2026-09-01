@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Layers, Globe, MapPin, Locate, Search, X, Loader2, Navigation } from 'lucide-react';
+import { Layers, Globe, MapPin, Locate, Search, X, Loader2 } from 'lucide-react';
 import { Site } from '../types';
 
 interface SiteGeofenceMapProps {
@@ -99,8 +99,8 @@ export const SiteGeofenceMap: React.FC<SiteGeofenceMapProps> = ({
       const localMatches = sites
         .filter(s => s.name.toLowerCase().includes(queryLower) || (s.address && s.address.toLowerCase().includes(queryLower)))
         .map(s => ({
-          lat: String(s.latitude || 23.0225),
-          lon: String(s.longitude || 72.5714),
+          lat: String(s.latitude || 19.04574),
+          lon: String(s.longitude || 73.08025),
           display_name: `${s.name} (${s.address || 'Construction Site'})`
         }));
 
@@ -149,8 +149,8 @@ export const SiteGeofenceMap: React.FC<SiteGeofenceMapProps> = ({
       mapInstanceRef.current = null;
     }
 
-    const defaultLat = currentLat || 23.0225;
-    const defaultLng = currentLng || 72.5714;
+    const defaultLat = currentLat || (sites[0]?.latitude) || 19.04574;
+    const defaultLng = currentLng || (sites[0]?.longitude) || 73.08025;
 
     const map = L.map(mapContainerRef.current, {
       center: [defaultLat, defaultLng],
@@ -183,17 +183,22 @@ export const SiteGeofenceMap: React.FC<SiteGeofenceMapProps> = ({
       streetsLayer.addTo(map);
     }
 
+    // Clean previous layers
+    siteLayersRef.current.forEach(layer => layer.remove());
+    siteLayersRef.current = [];
+
     // Add existing sites if viewing master overview
     if (!interactive && sites.length > 0) {
       sites.forEach(s => {
         if (s.latitude && s.longitude) {
+          const siteRadius = Number(s.radius) > 0 ? Number(s.radius) : 150;
           const m = L.marker([s.latitude, s.longitude]).addTo(map);
-          m.bindPopup(`<b>${s.name}</b><br/>${s.address || ''}<br/>Radius: ${s.radius || 150}m`);
+          m.bindPopup(`<b>${s.name}</b><br/>${s.address || ''}<br/>Radius: ${siteRadius}m`);
           const c = L.circle([s.latitude, s.longitude], {
             color: '#f59e0b',
             fillColor: '#f59e0b',
             fillOpacity: 0.2,
-            radius: s.radius || 150
+            radius: siteRadius
           }).addTo(map);
           siteLayersRef.current.push(m, c);
         }
@@ -202,6 +207,7 @@ export const SiteGeofenceMap: React.FC<SiteGeofenceMapProps> = ({
 
     // Interactive target marker & geofence circle
     if (interactive) {
+      const activeRadius = Number(radius) > 0 ? Number(radius) : 150;
       const marker = L.marker([defaultLat, defaultLng], {
         draggable: true
       }).addTo(map);
@@ -210,7 +216,7 @@ export const SiteGeofenceMap: React.FC<SiteGeofenceMapProps> = ({
         color: '#f59e0b',
         fillColor: '#f59e0b',
         fillOpacity: 0.25,
-        radius: radius || 150
+        radius: activeRadius
       }).addTo(map);
 
       markerRef.current = marker;
@@ -244,17 +250,18 @@ export const SiteGeofenceMap: React.FC<SiteGeofenceMapProps> = ({
         mapInstanceRef.current = null;
       }
     };
-  }, [mapType]);
+  }, [mapType, sites, interactive]);
 
-  // Update marker and circle position when props change
+  // Update marker and circle position & dynamic radius in real-time
   useEffect(() => {
     if (mapInstanceRef.current && interactive) {
+      const activeRadius = Number(radius) > 0 ? Number(radius) : 150;
       if (markerRef.current) {
         markerRef.current.setLatLng([currentLat, currentLng]);
       }
       if (circleRef.current) {
         circleRef.current.setLatLng([currentLat, currentLng]);
-        circleRef.current.setRadius(radius || 150);
+        circleRef.current.setRadius(activeRadius);
       }
       mapInstanceRef.current.panTo([currentLat, currentLng]);
     }
@@ -281,6 +288,8 @@ export const SiteGeofenceMap: React.FC<SiteGeofenceMapProps> = ({
       );
     }
   };
+
+  const displayRadius = Number(radius) > 0 ? Number(radius) : (sites[0]?.radius ? Number(sites[0].radius) : 150);
 
   return (
     <div className="relative w-full rounded-2xl overflow-hidden border border-slate-200 dark:border-slate-700 shadow-inner bg-slate-900">
@@ -381,7 +390,7 @@ export const SiteGeofenceMap: React.FC<SiteGeofenceMapProps> = ({
       {interactive && (
         <div className="absolute bottom-2.5 left-2.5 z-[1000] bg-slate-900/90 backdrop-blur-md px-3 py-1.5 rounded-xl border border-slate-700 text-white text-[11px] font-mono flex items-center gap-2">
           <MapPin className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-          <span>Lat: {currentLat.toFixed(5)} | Lng: {currentLng.toFixed(5)} | Radius: {radius}m</span>
+          <span>Lat: {currentLat.toFixed(5)} | Lng: {currentLng.toFixed(5)} | Radius: {displayRadius}m</span>
         </div>
       )}
     </div>
