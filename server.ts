@@ -104,6 +104,7 @@ db.exec(`
     service_account_json TEXT,
     web_app_url TEXT,
     sync_enabled INTEGER DEFAULT 1,
+    is_locked INTEGER DEFAULT 1,
     last_sync_timestamp TEXT
   );
 
@@ -249,19 +250,30 @@ const desigCount = (db.prepare("SELECT COUNT(*) as count FROM designations").get
 if (desigCount === 0) {
   const defaultDesignations = [
     "Managing Director (MD)",
-    "Executive Director / Partner",
+    "Executive Director",
     "Chief Executive Officer (CEO)",
-    "Project Manager / Construction Head",
+    "General Manager (GM)",
+    "Project Head / CPM",
     "Senior Site Engineer",
     "Junior Site Engineer",
     "Site Supervisor",
-    "Safety Officer",
-    "Quality Control (QC) Engineer",
-    "Sales Manager",
-    "Sales Executive",
+    "Quality & Safety Engineer",
+    "Purchase & Material Manager",
+    "Sales Head / Manager",
+    "Senior Sales Executive",
+    "Sales Executive / Field Officer",
+    "Telecaller / CRM Executive",
+    "Digital Marketing Executive",
+    "Head of Accounts & Finance",
     "Accountant",
-    "HR Executive",
-    "Office Assistant"
+    "HR & Admin Manager",
+    "Legal & Liaison Officer",
+    "Front Desk / Receptionist",
+    "Site Storekeeper",
+    "Security In-Charge",
+    "Driver / Logistics",
+    "Office Boy / Peon",
+    "Housekeeping Staff"
   ];
   const stmt = db.prepare("INSERT OR IGNORE INTO designations (name) VALUES (?)");
   for (const name of defaultDesignations) { stmt.run(name); }
@@ -277,9 +289,10 @@ if (!existingDirector) {
   db.prepare("INSERT INTO users (registration_id, name, email, role, department_id, password, designation, allowed_devices) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run("DIR-01", "Director / Partner", "director@rudra.com", "director", 1, "director123", "Managing Director (MD)", 99);
 }
 
-const settingsCount = db.prepare("SELECT COUNT(*) as count FROM sheet_settings").get() as { count: number };
-if (settingsCount.count === 0) {
-  db.prepare("INSERT INTO sheet_settings (users_sheet_name, attendance_sheet_name, sync_enabled) VALUES (?, ?, ?)").run("Users", "Attendance", 1);
+// Ensure row id=1 exists permanently in sheet_settings
+const settingsRow = db.prepare("SELECT * FROM sheet_settings WHERE id = 1").get();
+if (!settingsRow) {
+  db.prepare("INSERT OR IGNORE INTO sheet_settings (id, users_sheet_name, attendance_sheet_name, sync_enabled, is_locked) VALUES (1, 'Users', 'Attendance', 1, 1)").run();
 }
 
 const geofenceSettingsCount = db.prepare("SELECT COUNT(*) as count FROM geofence_settings").get() as { count: number };
@@ -299,7 +312,7 @@ if (sitesCount.count === 0) {
   }
 }
 
-// Durable File Backup Mechanism (Strictly overwrites with current database state)
+// Durable File Backup Mechanism
 const BACKUP_FILE = path.join(process.cwd(), "app_data_backup.json");
 
 function backupDatabaseToJson() {
@@ -356,12 +369,12 @@ async function fetchWithRedirect(url: string, options: any = {}): Promise<Respon
 }
 
 // =========================================================================
-// REAL-TIME CLOUD ENGINE (Push-Only Event Driven Sync - 100% Reliable)
+// REAL-TIME CLOUD ENGINE (Push-Only Event Driven Sync)
 // =========================================================================
 
 async function syncFullDatabaseToSheets(): Promise<{ success: boolean; message: string }> {
   try {
-    const settings = db.prepare("SELECT * FROM sheet_settings LIMIT 1").get() as any;
+    const settings = db.prepare("SELECT * FROM sheet_settings WHERE id = 1").get() as any;
     if (!settings || !settings.web_app_url || settings.sync_enabled === 0) {
       return { success: false, message: "Sync disabled or Web App URL missing." };
     }
@@ -428,21 +441,19 @@ async function syncFullDatabaseToSheets(): Promise<{ success: boolean; message: 
   }
 }
 
-// Background auto trigger for any database event (Fire & Forget)
 function triggerLiveSync(context = "general") {
   syncFullDatabaseToSheets().then(res => {
     if (res.success) {
-      console.log(`[GoogleSheet Live Sync] Triggered & Updated successfully for: ${context}`);
+      console.log(`[GoogleSheet Live Sync] Updated successfully for: ${context}`);
     }
   }).catch(e => {
     console.warn(`[GoogleSheet Live Sync] Background sync warning:`, e.message);
   });
 }
 
-// Fast realtime punch appender for single Check-In / Check-Out
 async function appendAttendanceLogLive(userId: number, date: string, checkInTime: string, status: string, method: string, sessionId: number | null, checkoutTime?: string) {
   try {
-    const settings = db.prepare("SELECT * FROM sheet_settings LIMIT 1").get() as any;
+    const settings = db.prepare("SELECT * FROM sheet_settings WHERE id = 1").get() as any;
     if (!settings || !settings.web_app_url || settings.sync_enabled === 0) return;
 
     const user = db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as any;
@@ -641,7 +652,6 @@ async function startServer() {
   app.put("/api/users/:id", handleUpdateUser);
   app.put("/api/super_admin/users/:id", handleUpdateUser);
 
-  // DELETE USER (Permanent & Synced)
   app.delete(["/api/users/:id", "/api/super_admin/users/:id"], (req, res) => {
     const { id } = req.params;
     try {
@@ -651,9 +661,7 @@ async function startServer() {
       db.prepare("DELETE FROM notifications WHERE user_id = ?").run(id);
       db.prepare("DELETE FROM users WHERE id = ?").run(id);
 
-      // Overwrite JSON backup immediately
       backupDatabaseToJson();
-      // Push fresh state to Google Sheets immediately
       triggerLiveSync('delete_user');
       
       res.json({ success: true, message: "User deleted successfully." });
@@ -691,7 +699,7 @@ async function startServer() {
 
     const timeParts = (time || "10:00").split(":");
     const totalMinutes = parseInt(timeParts[0], 10) * 60 + parseInt(timeParts[1] || "0", 10);
-    const standardStartMinutes = 10 * 60; // 10:00 AM
+    const standardStartMinutes = 10 * 60;
 
     if (totalMinutes > standardStartMinutes) {
       status = "L";
@@ -741,22 +749,45 @@ async function startServer() {
     }
   });
 
-  // Sheet Settings API
+  // Sheet Settings API (Permanent Lock & Save with UPSERT)
   app.get("/api/sheet-settings", (req, res) => {
-    const settings = db.prepare("SELECT * FROM sheet_settings LIMIT 1").get();
-    res.json(settings || {});
+    try {
+      let settings = db.prepare("SELECT * FROM sheet_settings WHERE id = 1").get() as any;
+      if (!settings) {
+        db.prepare("INSERT OR IGNORE INTO sheet_settings (id, users_sheet_name, attendance_sheet_name, sync_enabled, is_locked) VALUES (1, 'Users', 'Attendance', 1, 1)").run();
+        settings = db.prepare("SELECT * FROM sheet_settings WHERE id = 1").get();
+      }
+      res.json(settings || {});
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
+    }
   });
 
   app.post("/api/sheet-settings", (req, res) => {
     const { spreadsheet_id, users_sheet_name, attendance_sheet_name, web_app_url, sync_enabled, is_locked } = req.body;
     try {
+      const cleanUrl = web_app_url ? String(web_app_url).trim() : null;
       db.prepare(`
-        UPDATE sheet_settings 
-        SET spreadsheet_id = ?, users_sheet_name = ?, attendance_sheet_name = ?, web_app_url = ?, sync_enabled = ?, is_locked = ?
-        WHERE id = 1
-      `).run(spreadsheet_id || null, users_sheet_name || 'Users', attendance_sheet_name || 'Attendance', web_app_url ? String(web_app_url).trim() : null, sync_enabled !== undefined ? (sync_enabled ? 1 : 0) : 1, is_locked !== undefined ? (is_locked ? 1 : 0) : 1);
+        INSERT INTO sheet_settings (id, spreadsheet_id, users_sheet_name, attendance_sheet_name, web_app_url, sync_enabled, is_locked)
+        VALUES (1, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          spreadsheet_id = excluded.spreadsheet_id,
+          users_sheet_name = excluded.users_sheet_name,
+          attendance_sheet_name = excluded.attendance_sheet_name,
+          web_app_url = COALESCE(excluded.web_app_url, sheet_settings.web_app_url),
+          sync_enabled = excluded.sync_enabled,
+          is_locked = excluded.is_locked
+      `).run(
+        spreadsheet_id || null, 
+        users_sheet_name || 'Users', 
+        attendance_sheet_name || 'Attendance', 
+        cleanUrl, 
+        sync_enabled !== undefined ? (sync_enabled ? 1 : 0) : 1, 
+        is_locked !== undefined ? (is_locked ? 1 : 0) : 1
+      );
 
-      res.json({ success: true, message: "Saved settings system-wide!" });
+      backupDatabaseToJson();
+      res.json({ success: true, message: "Sheet settings saved permanently!" });
     } catch (e: any) {
       res.status(500).json({ success: false, message: e.message });
     }
@@ -764,7 +795,7 @@ async function startServer() {
 
   app.post("/api/sheet-settings/test", async (req, res) => {
     const { web_app_url } = req.body;
-    const settings = db.prepare("SELECT * FROM sheet_settings LIMIT 1").get() as any;
+    const settings = db.prepare("SELECT * FROM sheet_settings WHERE id = 1").get() as any;
     const targetUrl = web_app_url ? String(web_app_url).trim() : (settings ? settings.web_app_url : "");
 
     if (!targetUrl) return res.status(400).json({ success: false, message: "No Deployment URL provided." });
@@ -788,10 +819,9 @@ async function startServer() {
     else res.status(500).json({ success: false, message: result.message });
   });
 
-  // Pull data manually if requested by Super Admin
   app.post("/api/sheet-settings/pull-all", async (req, res) => {
     try {
-      const settings = db.prepare("SELECT * FROM sheet_settings LIMIT 1").get() as any;
+      const settings = db.prepare("SELECT * FROM sheet_settings WHERE id = 1").get() as any;
       if (!settings || !settings.web_app_url) return res.status(400).json({ success: false, message: "Deployment URL missing." });
 
       const response = await fetchWithRedirect(`${settings.web_app_url}?action=getAllData`);
@@ -917,7 +947,7 @@ async function startServer() {
     }
   });
 
-// Master Tables
+  // Master Designations CRUD API
   app.get("/api/designations", (req, res) => {
     try {
       res.json(db.prepare("SELECT * FROM designations ORDER BY id ASC").all());
@@ -928,27 +958,35 @@ async function startServer() {
 
   app.post("/api/designations", (req, res) => {
     const { name } = req.body;
-    if (!name || !name.trim()) {
+    const cleanName = (name || "").trim();
+    if (!cleanName) {
       return res.status(400).json({ success: false, message: "Designation name is required" });
     }
     try {
-      const result = db.prepare("INSERT INTO designations (name) VALUES (?)").run(name.trim());
+      const stmt = db.prepare("INSERT INTO designations (name) VALUES (?)");
+      const result = stmt.run(cleanName);
       backupDatabaseToJson();
-      triggerLiveSync('designations');
-      res.json({ success: true, id: result.lastInsertRowid });
+      triggerLiveSync('create_designation');
+      const newItem = db.prepare("SELECT * FROM designations WHERE id = ?").get(result.lastInsertRowid);
+      res.json({ success: true, id: result.lastInsertRowid, item: newItem, message: "Post added successfully!" });
     } catch (e: any) {
-      res.status(400).json({ success: false, message: "Designation already exists or invalid" });
+      const existing = db.prepare("SELECT * FROM designations WHERE LOWER(name) = LOWER(?)").get(cleanName);
+      if (existing) {
+        return res.json({ success: true, id: (existing as any).id, item: existing, message: "Post already exists" });
+      }
+      res.status(400).json({ success: false, message: e.message });
     }
   });
 
   app.put("/api/designations/:id", (req, res) => {
     const { id } = req.params;
     const { name } = req.body;
-    if (!name || !name.trim()) {
+    const cleanName = (name || "").trim();
+    if (!cleanName) {
       return res.status(400).json({ success: false, message: "Designation name is required" });
     }
     try {
-      db.prepare("UPDATE designations SET name = ? WHERE id = ?").run(name.trim(), id);
+      db.prepare("UPDATE designations SET name = ? WHERE id = ?").run(cleanName, id);
       backupDatabaseToJson();
       triggerLiveSync('update_designation');
       res.json({ success: true, message: "Designation updated successfully" });
