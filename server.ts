@@ -775,9 +775,16 @@ async function startServer() {
   // Attendance Punch In / Out
   app.post("/api/attendance/check-in", (req, res) => {
     const { userId, date, time, location, method, sessionId, deviceId, photoUrl, lateReason } = req.body;
-    const userRow = db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as any;
     
-    let isProxyFlagged = 0;
+    // Strict Mandatory GPS Check
+    if (!location || !location.latitude || !location.longitude) {
+      return res.status(400).json({
+        success: false,
+        message: "GPS Location is compulsory. Please turn on device location to punch attendance."
+      });
+    }
+
+    const userRow = db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as any;
     if (userRow && (Number(userRow.allowed_devices) || 1) === 1) {
       if (userRow.bound_device_id && deviceId && userRow.bound_device_id !== deviceId) {
         return res.status(403).json({ success: false, message: "Security Violation: Account bound to another device." });
