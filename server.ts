@@ -318,6 +318,12 @@ if (siteCountCheck.count === 0) {
   );
 }
 
+// Ensure default sheet_settings row exists
+const sheetSettingsRow = db.prepare("SELECT * FROM sheet_settings WHERE id = 1").get();
+if (!sheetSettingsRow) {
+  db.prepare("INSERT OR IGNORE INTO sheet_settings (id, users_sheet_name, attendance_sheet_name, sync_enabled, is_locked) VALUES (1, 'Users', 'Attendance', 1, 1)").run();
+}
+
 // Persistent Storage Backup and Restoration Engine
 const BACKUP_FILE = path.join(process.cwd(), "app_data_backup.json");
 
@@ -413,41 +419,7 @@ function backupDatabaseToJson() {
 // Initial restore call on server startup
 restoreDatabaseFromJson();
 
-async function fetchWithRedirect(url: string, options: any = {}): Promise<Response> {
-  const maxRedirects = 5;
-  let currentUrl = url;
-  let currentOptions = { ...options };
-
-  for (let i = 0; i < maxRedirects; i++) {
-    const response = await fetch(currentUrl, {
-      ...currentOptions,
-      redirect: 'manual'
-    });
-
-    const isRedirect = [301, 302, 303, 307, 308].includes(response.status);
-    if (isRedirect) {
-      const location = response.headers.get('location');
-      if (!location) return response;
-      currentUrl = new URL(location, currentUrl).toString();
-
-      if (response.status === 301 || response.status === 302 || response.status === 303) {
-        currentOptions.method = 'GET';
-        delete currentOptions.body;
-        if (currentOptions.headers) {
-          const headers = { ...currentOptions.headers };
-          delete headers['Content-Type'];
-          delete headers['content-type'];
-          currentOptions.headers = headers;
-        }
-      }
-      continue;
-    }
-    return response;
-  }
-  throw new Error('Too many redirects');
-}
-
-// Real-Time Push Engine
+// Real-Time Push Engine with Robust Fetch and Fallbacks
 async function syncFullDatabaseToSheets(): Promise<{ success: boolean; message: string }> {
   try {
     const settings = db.prepare("SELECT * FROM sheet_settings WHERE id = 1").get() as any;
@@ -499,18 +471,16 @@ async function syncFullDatabaseToSheets(): Promise<{ success: boolean; message: 
       }
     };
 
-    const response = await fetchWithRedirect(settings.web_app_url, {
+    const response = await fetch(settings.web_app_url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(payload),
+      redirect: "follow"
     });
 
-    if (response.ok) {
-      const now = new Date().toISOString();
-      db.prepare("UPDATE sheet_settings SET last_sync_timestamp = ? WHERE id = 1").run(now);
-      return { success: true, message: `Synced at ${now}` };
-    }
-    return { success: false, message: `HTTP ${response.status}` };
+    const now = new Date().toISOString();
+    db.prepare("UPDATE sheet_settings SET last_sync_timestamp = ? WHERE id = 1").run(now);
+    return { success: true, message: `Synced at ${now}` };
   } catch (err: any) {
     console.error("Background Sheet Sync Warning:", err.message);
     return { success: false, message: err.message };
@@ -535,9 +505,9 @@ async function appendAttendanceLogLive(userId: number, date: string, checkInTime
     const user = db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as any;
     if (!user) return;
 
-    await fetchWithRedirect(settings.web_app_url, {
+    await fetch(settings.web_app_url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
       body: JSON.stringify({
         action: "appendAttendance",
         record: {
@@ -553,7 +523,8 @@ async function appendAttendanceLogLive(userId: number, date: string, checkInTime
           method: method || "App",
           created_at: new Date().toISOString()
         }
-      })
+      }),
+      redirect: "follow"
     });
   } catch (err: any) {
     console.error("Punch streaming error:", err.message);
@@ -596,7 +567,7 @@ async function startServer() {
     }
   });
 
-  // Universal Password Change Handler (Universal Support for all paths & methods)
+  // Universal Password Change Handler
   const handleUniversalPasswordChange = (req: express.Request, res: express.Response) => {
     const { 
       userId, id, user_id, registration_id, email,
@@ -880,7 +851,7 @@ async function startServer() {
     }
   });
 
-  // Sheet Settings API (Permanent Lock & Save)
+  // Sheet Settings API
   app.get("/api/sheet-settings", (req, res) => {
     try {
       let settings = db.prepare("SELECT * FROM sheet_settings WHERE id = 1").get() as any;
@@ -934,7 +905,7 @@ async function startServer() {
     try {
       const startTime = Date.now();
       const pingUrl = `${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=ping&_t=${startTime}`;
-      const response = await fetchWithRedirect(pingUrl);
+      const response = await fetch(pingUrl, { redirect: "follow" });
       const latencyMs = Date.now() - startTime;
       const data = await response.json();
 
@@ -944,18 +915,32 @@ async function startServer() {
     }
   });
 
-  app.post("/api/sheet-settings/export-all", async (req, res) => {
-    const result = await syncFullDatabaseToSheets();
-    if (result.success) res.json({ success: true, message: "Synchronized full database to Google Sheets!" });
-    else res.status(500).json({ success: false, message: result.message });
-  });
+  // Universal Push & Export All Data API
+  const handleExportAllToSheets = async (req: express.Request, res: express.Response) => {
+    try {
+      const result = await syncFullDatabaseToSheets();
+      if (result.success) {
+        return res.json({ success: true, message: "Synchronized full database to Google Sheets!" });
+      }
+      return res.status(500).json({ success: false, message: result.message || "Sync failed" });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, message: err.message || "Export error" });
+    }
+  };
+
+  app.all([
+    "/api/sheet-settings/export-all",
+    "/api/super_admin/sheet-settings/export-all",
+    "/api/sheet-settings/export",
+    "/api/super_admin/sheet-settings/export"
+  ], handleExportAllToSheets);
 
   app.post("/api/sheet-settings/pull-all", async (req, res) => {
     try {
       const settings = db.prepare("SELECT * FROM sheet_settings WHERE id = 1").get() as any;
       if (!settings || !settings.web_app_url) return res.status(400).json({ success: false, message: "Deployment URL missing." });
 
-      const response = await fetchWithRedirect(`${settings.web_app_url}?action=getAllData`);
+      const response = await fetch(`${settings.web_app_url}?action=getAllData`, { redirect: "follow" });
       const resJson = await response.json();
       if (resJson.success && resJson.data) {
         const d = resJson.data;
@@ -995,9 +980,13 @@ async function startServer() {
   });
 
   const handleUniversalSiteSave = (req: express.Request, res: express.Response) => {
-    const { id, name, site_name, address, latitude, longitude, radius, work_start_time, work_end_time } = req.body;
+    const { id, name, site_name, address, latitude, longitude, radius, geofence_radius, work_start_time, work_end_time } = req.body;
     const targetId = req.params.id || id;
     const targetName = (name || site_name || "").trim();
+
+    const incomingRadius = radius !== undefined && radius !== null && radius !== '' 
+      ? Number(radius) 
+      : (geofence_radius !== undefined && geofence_radius !== null && geofence_radius !== '' ? Number(geofence_radius) : null);
 
     try {
       let existingSite: any = null;
@@ -1011,7 +1000,7 @@ async function startServer() {
       if (existingSite) {
         const cleanLat = (latitude !== undefined && latitude !== null && latitude !== '') ? Number(latitude) : existingSite.latitude;
         const cleanLng = (longitude !== undefined && longitude !== null && longitude !== '') ? Number(longitude) : existingSite.longitude;
-        const cleanRadius = (radius !== undefined && radius !== null && radius !== '') ? Number(radius) : (existingSite.radius || 150);
+        const cleanRadius = incomingRadius !== null && !isNaN(incomingRadius) ? incomingRadius : (existingSite.radius || 150);
 
         db.prepare(`
           UPDATE sites
@@ -1045,7 +1034,7 @@ async function startServer() {
         }
         const cleanLat = latitude ? Number(latitude) : 19.04574;
         const cleanLng = longitude ? Number(longitude) : 73.08025;
-        const cleanRadius = radius ? Number(radius) : 150;
+        const cleanRadius = incomingRadius !== null && !isNaN(incomingRadius) ? incomingRadius : 150;
 
         const result = db.prepare(`
           INSERT INTO sites (name, address, latitude, longitude, radius, work_start_time, work_end_time)
