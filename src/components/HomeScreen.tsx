@@ -18,6 +18,21 @@ interface HomeScreenProps {
   lang?: 'en' | 'hi';
 }
 
+// Distance Calculation in Meters (Haversine Formula)
+function calculateDistanceMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371e3; // Earth radius in meters
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
 export const HomeScreen: React.FC<HomeScreenProps> = ({
   currentUser,
   onOpenLeaveModal,
@@ -55,7 +70,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     type: 'welcome' | 'goodbye';
   }>({ show: false, title: '', message: '', type: 'welcome' });
 
-  // Compute shift timings considering user settings and approved/pending half-day or time-change requests
+  // Compute shift timings
   const getTodayShiftTimes = () => {
     let startMinutes = 10 * 60; // 10:00 AM
     let endMinutes = 19 * 60; // 07:00 PM
@@ -95,7 +110,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     return { startMinutes, endMinutes, isHalfDay: !!halfDayReq };
   };
 
-  // Clock ticker
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
     return () => clearInterval(timer);
@@ -114,7 +128,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     }
   };
 
-  // Fetch today's record and sites
   const fetchTodayData = async () => {
     try {
       const todayStr = new Date().toISOString().split('T')[0];
@@ -146,7 +159,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   useEffect(() => {
     fetchTodayData();
 
-    // Get current GPS location silently
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         pos => {
@@ -164,44 +176,89 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     }
   }, [currentUser.id]);
 
-  // Dynamic Time Greeting
+  // Strict GPS and Geofence Helper
+  const getVerifiedLiveLocation = async (): Promise<{ lat: number; lng: number; accuracy: number; distance: number; siteName: string } | null> => {
+    if (!navigator.geolocation) {
+      alert("❌ Browser Geolocation error: Tamara device/browser ma GPS support nathi. Krupya modern browser vapro.");
+      return null;
+    }
+
+    try {
+      const position: GeolocationPosition = await new Promise((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 0
+        });
+      });
+
+      const userLat = position.coords.latitude;
+      const userLng = position.coords.longitude;
+      const accuracy = position.coords.accuracy;
+
+      setGpsLocation({ latitude: userLat, longitude: userLng });
+
+      // Identify Assigned Site
+      const assignedSite = sites.find(s => s.name?.trim().toLowerCase() === currentUser.site_name?.trim().toLowerCase()) 
+        || sites[0];
+
+      if (!assignedSite || !assignedSite.latitude || !assignedSite.longitude) {
+        alert("❌ Assigned Site details found nathi. Admin sathe sampark karo.");
+        return null;
+      }
+
+      const allowedRadius = (assignedSite.radius !== undefined && assignedSite.radius !== null) 
+        ? Number(assignedSite.radius) 
+        : (assignedSite.geofence_radius ? Number(assignedSite.geofence_radius) : 20);
+
+      const distance = calculateDistanceMeters(userLat, userLng, assignedSite.latitude, assignedSite.longitude);
+
+      // Boundary Enforcement (Block if user is outside allowed radius)
+      if (distance > allowedRadius) {
+        const distRounded = Math.round(distance);
+        alert(
+          `❌ Punch Rejected!\n\nTame assigned site (${assignedSite.name}) ni boundary thi ${distRounded}m door chho.\n\nPunch karva mate site na ${allowedRadius}m radius ma aavo.`
+        );
+        return null;
+      }
+
+      return {
+        lat: userLat,
+        lng: userLng,
+        accuracy,
+        distance: Math.round(distance),
+        siteName: assignedSite.name
+      };
+    } catch (err: any) {
+      if (err.code === 1) { // PERMISSION_DENIED
+        alert("❌ Location Permission Required!\n\nPunch karva mate Phone nu GPS Location ON karo ane browser ma Location permission Allow karo.");
+      } else if (err.code === 2) { // POSITION_UNAVAILABLE
+        alert("❌ GPS Signal Not Available!\n\nKrupya phone nu Location/GPS on karo ane thodi var ma fari prayas karo.");
+      } else if (err.code === 3) { // TIMEOUT
+        alert("❌ GPS Timeout!\n\nLocation melvavama var lagi. Krupya open area ma aavi ne fari try karo.");
+      } else {
+        alert("❌ Location Error: " + err.message);
+      }
+      return null;
+    }
+  };
+
   const getGreeting = () => {
     const hour = currentTime.getHours();
     if (hour >= 5 && hour < 12) {
-      return { 
-        text: 'Good Morning', 
-        icon: Sunrise, 
-        color: 'text-amber-500', 
-        hindi: 'शुभ प्रभात'
-      };
+      return { text: 'Good Morning', icon: Sunrise, color: 'text-amber-500', hindi: 'शुभ प्रभात' };
     } else if (hour >= 12 && hour < 17) {
-      return { 
-        text: 'Good Afternoon', 
-        icon: Sun, 
-        color: 'text-amber-500', 
-        hindi: 'शुभ दोपहर'
-      };
+      return { text: 'Good Afternoon', icon: Sun, color: 'text-amber-500', hindi: 'शुभ दोपहर' };
     } else if (hour >= 17 && hour < 21) {
-      return { 
-        text: 'Good Evening', 
-        icon: Sunset, 
-        color: 'text-orange-500', 
-        hindi: 'शुभ संध्या'
-      };
+      return { text: 'Good Evening', icon: Sunset, color: 'text-orange-500', hindi: 'शुभ संध्या' };
     } else {
-      return { 
-        text: 'Good Night', 
-        icon: Moon, 
-        color: 'text-indigo-500', 
-        hindi: 'शुभ रात्रि'
-      };
+      return { text: 'Good Night', icon: Moon, color: 'text-indigo-500', hindi: 'शुभ रात्रि' };
     }
   };
 
   const greeting = getGreeting();
   const GreetingIcon = greeting.icon;
 
-  // Status computation & Active Special Requests for Today
   const todayStr = new Date().toISOString().split('T')[0];
   const todayApprovedSpecial = todayRequests.find((r: any) => 
     r.status === 'APPROVED' &&
@@ -213,7 +270,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const isTodayLeave = todayRecord?.status === 'Leave' || todayApprovedSpecial?.type === 'ADVANCE_LEAVE' || todayApprovedSpecial?.type === 'EMERGENCY_LEAVE' || todayApprovedSpecial?.type === 'LEAVE';
   const isTodayHalfDay = todayRecord?.status === 'Half Day' || todayApprovedSpecial?.type === 'HALF_DAY';
 
-  // Handle Check-In initiation (Prompt for reason if checking in late, respecting half-day/time-change shifts)
   const handleCheckInClick = () => {
     setModalError(null);
     const hour = currentTime.getHours();
@@ -222,7 +278,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
     const { startMinutes } = getTodayShiftTimes();
 
-    // If after shift start time, ask for late arrival reason (unless within 5 min grace)
     if (totalMinutes > startMinutes + 5) {
       setLateMins(totalMinutes - startMinutes);
       setShowLateCheckinModal(true);
@@ -231,33 +286,26 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     }
   };
 
-  // Perform Check-In API call
+  // Perform Check-In with Compulsory Live Geofence Check
   const performCheckIn = async (reason: string) => {
     if (loading) return;
     setLoading(true);
     setModalError(null);
 
+    // 1. Enforce live GPS verification
+    const verifiedLocation = await getVerifiedLiveLocation();
+    if (!verifiedLocation) {
+      setLoading(false);
+      return;
+    }
+
     try {
       const todayDateStr = new Date().toISOString().split('T')[0];
-      const timeStr = new Date().toTimeString().split(' ')[0]; // HH:MM:SS
+      const timeStr = new Date().toTimeString().split(' ')[0];
       const deviceId = localStorage.getItem('staffsync_device_fingerprint') || `device_${navigator.userAgent.slice(0, 20)}`;
       localStorage.setItem('staffsync_device_fingerprint', deviceId);
 
       const finalReason = reason && reason.trim() ? reason.trim() : (showLateCheckinModal ? 'Late Arrival (Acknowledged)' : undefined);
-
-      // Attempt fresh location if available
-      let loc = gpsLocation;
-      if (!loc && navigator.geolocation) {
-        try {
-          const pos: any = await new Promise((resolve) => {
-            navigator.geolocation.getCurrentPosition(resolve, () => resolve(null), { timeout: 3000 });
-          });
-          if (pos && pos.coords) {
-            loc = { latitude: pos.coords.latitude, longitude: pos.coords.longitude };
-            setGpsLocation(loc);
-          }
-        } catch (e) {}
-      }
 
       const res = await fetch('/api/attendance/check-in', {
         method: 'POST',
@@ -266,7 +314,12 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           userId: currentUser.id,
           date: todayDateStr,
           time: timeStr,
-          location: loc,
+          location: {
+            latitude: verifiedLocation.lat,
+            longitude: verifiedLocation.lng,
+            accuracy: verifiedLocation.accuracy,
+            distance: verifiedLocation.distance
+          },
           method: 'app',
           deviceId,
           deviceInfo: navigator.userAgent.slice(0, 40),
@@ -277,7 +330,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       const data = await res.json();
 
       if (!res.ok || !data.success) {
-        setModalError(data.message || 'Check-in failed. Please verify your GPS permissions or contact admin.');
+        setModalError(data.message || 'Check-in failed. Please verify GPS permissions.');
         setLoading(false);
         return;
       }
@@ -286,16 +339,10 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       setLateReason('');
       setModalError(null);
 
-      // Celebration Confetti
       try {
-        confetti({
-          particleCount: 80,
-          spread: 70,
-          origin: { y: 0.6 }
-        });
+        confetti({ particleCount: 80, spread: 70, origin: { y: 0.6 } });
       } catch (e) {}
 
-      // Energetic Welcome Toast
       setGreetingToast({
         show: true,
         title: lang === 'hi' ? 'शुभ प्रभात! काम पर स्वागत है!' : `${greeting.text}! Welcome to Work!`,
@@ -312,7 +359,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     }
   };
 
-  // Handle Check-Out initiation (Respects Half Day schedule)
   const handleCheckOutClick = () => {
     setModalError(null);
     const hour = currentTime.getHours();
@@ -321,7 +367,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     
     const { endMinutes } = getTodayShiftTimes();
 
-    // If before shift end time (e.g. 7 PM or 2:30 PM for 1st half), ask for early departure reason
     if (totalMinutes < endMinutes) {
       setShowEarlyCheckoutModal(true);
     } else {
@@ -329,11 +374,19 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     }
   };
 
-  // Perform Check-Out API call
+  // Perform Check-Out with Compulsory Live Geofence Check
   const performCheckOut = async (reason: string) => {
     if (loading) return;
     setLoading(true);
     setModalError(null);
+
+    // 1. Enforce live GPS verification
+    const verifiedLocation = await getVerifiedLiveLocation();
+    if (!verifiedLocation) {
+      setLoading(false);
+      return;
+    }
+
     try {
       const todayDateStr = new Date().toISOString().split('T')[0];
       const timeStr = new Date().toTimeString().split(' ')[0];
@@ -346,7 +399,12 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           userId: currentUser.id,
           date: todayDateStr,
           time: timeStr,
-          earlyCheckoutReason: finalReason
+          earlyCheckoutReason: finalReason,
+          location: {
+            latitude: verifiedLocation.lat,
+            longitude: verifiedLocation.lng,
+            distance: verifiedLocation.distance
+          }
         })
       });
 
@@ -361,7 +419,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       setEarlyReason('');
       setModalError(null);
 
-      // Goodbye Toast
       setGreetingToast({
         show: true,
         title: lang === 'hi' ? 'अलविदा! शुभ संध्या!' : 'Good Bye! Shift Concluded!',
@@ -378,7 +435,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     }
   };
 
-  // Status computation
   const isCheckedIn = !!todayRecord?.check_in;
   const isCheckedOut = !!todayRecord?.check_out;
 
@@ -413,13 +469,10 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 flex flex-col justify-between pb-24 px-4 pt-3 max-w-md mx-auto font-sans transition-colors">
       
-      {/* Top Header with Notification & Profile Avatar on LEFT side */}
       <div>
         <div className="flex items-center justify-between py-1 mb-2.5">
           
-          {/* Top Left: Notification Bell & Profile Avatar */}
           <div className="flex items-center gap-2">
-            {/* Notification Bell */}
             <button
               id="top-left-notifications-btn"
               onClick={() => setShowNotifModal(true)}
@@ -434,7 +487,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
               )}
             </button>
 
-            {/* Profile Avatar Icon - Click to Open Profile */}
             <button
               id="top-left-profile-avatar-btn"
               onClick={onNavigateProfile}
@@ -459,7 +511,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             </button>
           </div>
 
-          {/* Top Right: Location Site Pill & Large Clear Date */}
           <div className="flex flex-col items-end">
             <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-xs font-semibold text-slate-800 dark:text-slate-200 shadow-xs">
               <Building2 className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
@@ -467,7 +518,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                 {currentUser.site_name || 'Headquarters'}
               </span>
             </div>
-            {/* Prominent Day, Month, Date */}
             <span className="text-xs sm:text-sm font-bold text-slate-800 dark:text-slate-200 mt-1 tracking-tight">
               {currentTime.toLocaleDateString(lang === 'hi' ? 'hi-IN' : 'en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}
             </span>
@@ -475,7 +525,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
         </div>
 
-        {/* Active Leave / Weekly Off Notice Card if today is scheduled */}
         {(isTodayWeeklyOff || isTodayLeave || isTodayHalfDay) && (
           <div className={`p-4 rounded-3xl border mb-3.5 shadow-xs animate-in fade-in duration-200 ${
             isTodayWeeklyOff
@@ -515,7 +564,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           </div>
         )}
 
-        {/* Dynamic Greeting Banner (No Gujarati) */}
         <div className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-3xl p-4 shadow-xs mb-3.5">
           <div className="flex items-center justify-between">
             <div>
@@ -540,7 +588,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           </div>
         </div>
 
-        {/* Status Box & Official Shift Hours */}
         <div className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-3xl p-4 shadow-xs mb-4">
           <div className="flex items-center justify-between mb-3">
             <span className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
@@ -572,12 +619,10 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
       </div>
 
-      {/* Interactive Attendance Circle (Zero-Jank Fixed Dimension Layout) */}
       <div className="my-auto py-2 flex flex-col items-center justify-center">
         
         <div className="w-64 h-64 relative flex items-center justify-center select-none">
           
-          {/* Subtle Ambient Ring Layer */}
           <div className={`absolute w-56 h-56 rounded-full transition-opacity duration-500 pointer-events-none ${
             !isCheckedIn
               ? 'bg-blue-500/10 ring-4 ring-blue-500/20'
@@ -586,7 +631,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
               : 'bg-slate-200/20 dark:bg-slate-800/30'
           }`}></div>
 
-          {/* Core Interactive Touch Button */}
           <button
             id="attendance-action-circle-btn"
             disabled={loading || (isCheckedIn && isCheckedOut)}
@@ -636,14 +680,12 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         </p>
       </div>
 
-      {/* Footer Branding */}
       <div className="text-center pt-2 pb-1">
         <p className="text-[11px] text-slate-400 dark:text-slate-500 font-normal">
           Designed & Developed by <span className="text-slate-700 dark:text-slate-300 font-semibold">Abhishek Bhatt</span>
         </p>
       </div>
 
-      {/* Notifications Slide-over Modal */}
       <NotificationsModal
         currentUser={currentUser}
         isOpen={showNotifModal}
@@ -652,7 +694,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         lang={lang}
       />
 
-      {/* Welcome / Goodbye Popup Toast */}
       {greetingToast.show && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 max-w-xs w-full shadow-2xl text-center">
@@ -671,7 +712,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             </p>
             <button
               onClick={() => setGreetingToast({ ...greetingToast, show: false })}
-              className="mt-5 w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl shadow-md transition-all"
+              className="mt-5 w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl shadow-md transition-all cursor-pointer"
             >
               Continue to Dashboard
             </button>
@@ -679,7 +720,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         </div>
       )}
 
-      {/* Early Checkout Reason Modal */}
       {showEarlyCheckoutModal && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-5 max-w-xs w-full shadow-2xl">
@@ -731,7 +771,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         </div>
       )}
 
-      {/* Late Check-In Reason Modal (Prompts employee if arriving after official start time) */}
       {showLateCheckinModal && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white dark:bg-slate-900 border border-amber-300/80 dark:border-amber-700/80 rounded-3xl p-5 max-w-sm w-full shadow-2xl animate-in fade-in zoom-in-95">
@@ -762,7 +801,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
               {lang === 'hi' ? 'कृपया देर से आने का कारण दर्ज करें:' : 'Please provide the reason for your late arrival:'}
             </p>
 
-            {/* Quick Reason Chips for fast 1-tap input */}
             <div className="flex flex-wrap gap-1.5 mb-3">
               {[
                 { en: 'Heavy Traffic', hi: 'भारी ट्रैफिक' },
