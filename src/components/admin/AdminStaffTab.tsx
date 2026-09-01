@@ -42,7 +42,7 @@ export const AdminStaffTab: React.FC<AdminStaffTabProps> = ({
   const [editingPositionName, setEditingPositionName] = useState('');
   const [positionLoading, setPositionLoading] = useState(false);
 
-  // Fetch designations from backend
+  // Fetch designations from backend API
   const fetchDesignations = async () => {
     try {
       const res = await fetch('/api/designations');
@@ -51,7 +51,6 @@ export const AdminStaffTab: React.FC<AdminStaffTabProps> = ({
         if (Array.isArray(data) && data.length > 0) {
           setDesignations(data);
         } else {
-          // Default fallbacks from constants
           setDesignations(CORPORATE_DESIGNATIONS.map((d, i) => ({ id: i + 1, name: d })));
         }
       }
@@ -115,7 +114,7 @@ export const AdminStaffTab: React.FC<AdminStaffTabProps> = ({
     setIsUsernameAuto(true);
     setRegId(nextId);
     setPassword('pass123');
-    setDesignation(designations[0]?.name || CORPORATE_DESIGNATIONS[0] || 'Project Manager');
+    setDesignation(designations[0]?.name || CORPORATE_DESIGNATIONS[0] || 'Project Head / CPM');
     setSiteName(sites[0]?.name || 'Headquarters');
     setAllowedDevices(1);
     setWorkStartTime('10:00');
@@ -252,7 +251,7 @@ export const AdminStaffTab: React.FC<AdminStaffTabProps> = ({
     }
   };
 
-  // Position CRUD handlers
+  // Position CRUD handlers (Auto sync to backend + sheets)
   const handleAddPosition = async (e: React.FormEvent) => {
     e.preventDefault();
     const trimmed = newPositionName.trim();
@@ -269,6 +268,7 @@ export const AdminStaffTab: React.FC<AdminStaffTabProps> = ({
         setNewPositionName('');
         await fetchDesignations();
         setDesignation(trimmed);
+        onRefresh();
       } else {
         alert(data.message || 'Failed to add position');
       }
@@ -313,6 +313,7 @@ export const AdminStaffTab: React.FC<AdminStaffTabProps> = ({
       const data = await res.json();
       if (res.ok && data.success) {
         await fetchDesignations();
+        onRefresh();
       } else {
         alert(data.message || 'Failed to delete position');
       }
