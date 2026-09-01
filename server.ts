@@ -917,19 +917,55 @@ async function startServer() {
     }
   });
 
-  // Master Tables
+// Master Tables
   app.get("/api/designations", (req, res) => {
-    res.json(db.prepare("SELECT * FROM designations ORDER BY name ASC").all());
+    try {
+      res.json(db.prepare("SELECT * FROM designations ORDER BY id ASC").all());
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
+    }
   });
 
   app.post("/api/designations", (req, res) => {
+    const { name } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ success: false, message: "Designation name is required" });
+    }
     try {
-      const result = db.prepare("INSERT INTO designations (name) VALUES (?)").run(req.body.name?.trim());
+      const result = db.prepare("INSERT INTO designations (name) VALUES (?)").run(name.trim());
       backupDatabaseToJson();
       triggerLiveSync('designations');
       res.json({ success: true, id: result.lastInsertRowid });
     } catch (e: any) {
-      res.status(400).json({ success: false, message: e.message });
+      res.status(400).json({ success: false, message: "Designation already exists or invalid" });
+    }
+  });
+
+  app.put("/api/designations/:id", (req, res) => {
+    const { id } = req.params;
+    const { name } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ success: false, message: "Designation name is required" });
+    }
+    try {
+      db.prepare("UPDATE designations SET name = ? WHERE id = ?").run(name.trim(), id);
+      backupDatabaseToJson();
+      triggerLiveSync('update_designation');
+      res.json({ success: true, message: "Designation updated successfully" });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  app.delete("/api/designations/:id", (req, res) => {
+    const { id } = req.params;
+    try {
+      db.prepare("DELETE FROM designations WHERE id = ?").run(id);
+      backupDatabaseToJson();
+      triggerLiveSync('delete_designation');
+      res.json({ success: true, message: "Designation deleted successfully" });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
     }
   });
 
