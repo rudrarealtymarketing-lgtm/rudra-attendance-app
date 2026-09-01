@@ -418,6 +418,104 @@ function backupDatabaseToJson() {
 
 // Initial restore call on server startup
 restoreDatabaseFromJson();
+// Auto-Restore from Google Sheets on Server Boot
+async function autoSyncFromGoogleSheetsOnBoot() {
+  try {
+    const settings = db.prepare("SELECT * FROM sheet_settings WHERE id = 1").get() as any;
+    if (!settings || !settings.web_app_url) return;
+
+    console.log(">>> Checking and pulling live database from Google Sheets on boot...");
+    const response = await fetch(`${settings.web_app_url}?action=getAllData`, { redirect: "follow" });
+    const resJson = await response.json();
+
+    if (resJson.success && resJson.data) {
+      const d = resJson.data;
+
+      // 1. Restore Users
+      if (Array.isArray(d.users) && d.users.length > 0) {
+        for (const u of d.users) {
+          if (u.name && u.role !== 'super_admin') {
+            db.prepare(`
+              INSERT INTO users (registration_id, name, username, email, phone, role, site_name, designation, monthly_salary, password, work_start_time, work_end_time)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              ON CONFLICT(registration_id) DO UPDATE SET
+                name = excluded.name,
+                username = excluded.username,
+                email = excluded.email,
+                phone = excluded.phone,
+                role = excluded.role,
+                site_name = excluded.site_name,
+                designation = excluded.designation,
+                monthly_salary = excluded.monthly_salary,
+                password = COALESCE(excluded.password, users.password),
+                work_start_time = excluded.work_start_time,
+                work_end_time = excluded.work_end_time
+            `).run(
+              u.registration_id || null, u.name, u.username || null, u.email || null, u.phone || null,
+              u.role || 'user', u.site_name || 'ARAMUS RUDRA', u.designation || 'Staff',
+              Number(u.monthly_salary) || 0, u.password || 'password123',
+              u.work_start_time || '10:00', u.work_end_time || '19:00'
+            );
+          }
+        }
+      }
+
+      // 2. Restore Attendance
+      if (Array.isArray(d.attendance) && d.attendance.length > 0) {
+        for (const a of d.attendance) {
+          const user = db.prepare("SELECT id FROM users WHERE registration_id = ? OR name = ?").get(a.registration_id, a.name) as any;
+          if (user && a.date) {
+            const existing = db.prepare("SELECT id FROM attendance WHERE user_id = ? AND date = ?").get(user.id, a.date);
+            if (!existing) {
+              db.prepare(`
+                INSERT INTO attendance (user_id, date, check_in, check_out, status, method, location, late_minutes, overtime_hours)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+              `).run(
+                user.id, a.date, a.check_in || null, a.check_out || null,
+                a.status === 'Present' ? 'P' : (a.status === 'Late' ? 'L' : a.status),
+                a.method || 'app', a.site_name || 'ARAMUS RUDRA',
+                Number(a.late_minutes) || 0, Number(a.overtime_hours) || 0
+              );
+            }
+          }
+        }
+      }
+
+      // 3. Restore Sites
+      if (Array.isArray(d.sites) && d.sites.length > 0) {
+        for (const s of d.sites) {
+          if (s.name) {
+            db.prepare(`
+              INSERT INTO sites (name, address, latitude, longitude, radius, work_start_time, work_end_time)
+              VALUES (?, ?, ?, ?, ?, ?, ?)
+              ON CONFLICT(name) DO UPDATE SET
+                address = excluded.address,
+                latitude = excluded.latitude,
+                longitude = excluded.longitude,
+                radius = excluded.radius,
+                work_start_time = excluded.work_start_time,
+                work_end_time = excluded.work_end_time
+            `).run(
+              s.name, s.address || '', Number(s.latitude) || 19.04574,
+              Number(s.longitude) || 73.08025, Number(s.radius) || 20,
+              s.work_start_time || '10:00', s.work_end_time || '19:00'
+            );
+          }
+        }
+      }
+
+      console.log(">>> Auto-restore completed: All users, sites, and attendance records restored from Google Sheets!");
+      backupDatabaseToJson();
+    }
+  } catch (err: any) {
+    console.warn("Auto-restore on boot warning:", err.message);
+  }
+}
+
+// Call on startup after 3 seconds
+setTimeout(() => {
+  autoSyncFromGoogleSheetsOnBoot();
+}, 3000);
 
 // Real-Time Push Engine with Robust Fetch and Fallbacks
 async function syncFullDatabaseToSheets(): Promise<{ success: boolean; message: string }> {
