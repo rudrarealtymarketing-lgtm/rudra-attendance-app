@@ -176,18 +176,29 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     }
   }, [currentUser.id]);
 
-  // Strict GPS and Geofence Helper (Professional English Alerts)
+  // Strict GPS and Geofence Helper with Built-in Fallback Coordinates
   const getVerifiedLiveLocation = async (): Promise<{ lat: number; lng: number; accuracy: number; distance: number; siteName: string } | null> => {
     if (!navigator.geolocation) {
       alert("❌ Browser Geolocation Error:\n\nYour browser or device does not support GPS location. Please open in Chrome or Safari.");
       return null;
     }
 
+    // Default Site Master Fallback (ARAMUS RUDRA)
+    const DEFAULT_FALLBACK_SITE: Site = {
+      id: 1,
+      name: 'ARAMUS RUDRA',
+      address: 'Plot 4 and 4a, Sector 18 Rd, Sector 18, Kharghar, Panvel, Maharashtra 410210',
+      latitude: 19.04574,
+      longitude: 73.08025,
+      radius: 20
+    };
+
     try {
+      // Triggers Android's Google Location Accuracy dialog
       const position: GeolocationPosition = await new Promise((resolve, reject) => {
         navigator.geolocation.getCurrentPosition(resolve, reject, {
           enableHighAccuracy: true,
-          timeout: 10000,
+          timeout: 15000,
           maximumAge: 0
         });
       });
@@ -198,22 +209,22 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
       setGpsLocation({ latitude: userLat, longitude: userLng });
 
-      // Identify Assigned Site
-      const assignedSite = sites.find(s => s.name?.trim().toLowerCase() === currentUser.site_name?.trim().toLowerCase()) 
-        || sites[0];
+      // Find Assigned Site or use Default Fallback
+      let assignedSite = sites.find(s => 
+        s.name?.trim().toLowerCase() === currentUser.site_name?.trim().toLowerCase()
+      );
 
       if (!assignedSite || !assignedSite.latitude || !assignedSite.longitude) {
-        alert("❌ Site Configuration Error:\n\nAssigned site GPS coordinates are missing. Please contact your system administrator.");
-        return null;
+        assignedSite = sites[0] || DEFAULT_FALLBACK_SITE;
       }
 
-      const allowedRadius = (assignedSite.radius !== undefined && assignedSite.radius !== null) 
-        ? Number(assignedSite.radius) 
-        : (assignedSite.geofence_radius ? Number(assignedSite.geofence_radius) : 20);
+      const siteLat = Number(assignedSite.latitude) || DEFAULT_FALLBACK_SITE.latitude;
+      const siteLng = Number(assignedSite.longitude) || DEFAULT_FALLBACK_SITE.longitude;
+      const allowedRadius = Number(assignedSite.radius) > 0 ? Number(assignedSite.radius) : 20;
 
-      const distance = calculateDistanceMeters(userLat, userLng, assignedSite.latitude, assignedSite.longitude);
+      const distance = calculateDistanceMeters(userLat, userLng, siteLat, siteLng);
 
-      // Boundary Enforcement (Block if user is outside allowed radius)
+      // Boundary Enforcement (Block if outside radius)
       if (distance > allowedRadius) {
         const distRounded = Math.round(distance);
         alert(
@@ -233,9 +244,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       if (err.code === 1) { // PERMISSION_DENIED
         alert("❌ Location Permission Required!\n\nPlease turn on your device GPS location and allow location access in your browser to record attendance.");
       } else if (err.code === 2) { // POSITION_UNAVAILABLE
-        alert("❌ GPS Signal Not Available!\n\nPlease ensure your device GPS is enabled and try again in an open area.");
+        alert("❌ GPS Signal Not Available!\n\nPlease ensure Google Location Accuracy is enabled on your phone.");
       } else if (err.code === 3) { // TIMEOUT
-        alert("❌ GPS Request Timed Out!\n\nUnable to retrieve accurate GPS location in time. Please try again.");
+        alert("❌ GPS Request Timed Out!\n\nUnable to retrieve accurate GPS location in time. Please try again in an open area.");
       } else {
         alert("❌ Location Error: " + err.message);
       }
