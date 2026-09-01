@@ -1,0 +1,10 @@
+{
+  "name": "Attendance App Managed by Rudra Infra World",
+  "description": "A premium, mobile-first attendance tracking system with GPS verification, leave workflows, and real-time reporting.",
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
