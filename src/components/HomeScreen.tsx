@@ -176,10 +176,10 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     }
   }, [currentUser.id]);
 
-  // Strict GPS and Geofence Helper
+  // Strict GPS and Geofence Helper (Professional English Alerts)
   const getVerifiedLiveLocation = async (): Promise<{ lat: number; lng: number; accuracy: number; distance: number; siteName: string } | null> => {
     if (!navigator.geolocation) {
-      alert("❌ Browser Geolocation error: Tamara device/browser ma GPS support nathi. Krupya modern browser vapro.");
+      alert("❌ Browser Geolocation Error:\n\nYour browser or device does not support GPS location. Please open in Chrome or Safari.");
       return null;
     }
 
@@ -203,7 +203,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         || sites[0];
 
       if (!assignedSite || !assignedSite.latitude || !assignedSite.longitude) {
-        alert("❌ Assigned Site details found nathi. Admin sathe sampark karo.");
+        alert("❌ Site Configuration Error:\n\nAssigned site GPS coordinates are missing. Please contact your system administrator.");
         return null;
       }
 
@@ -217,7 +217,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       if (distance > allowedRadius) {
         const distRounded = Math.round(distance);
         alert(
-          `❌ Punch Rejected!\n\nTame assigned site (${assignedSite.name}) ni boundary thi ${distRounded}m door chho.\n\nPunch karva mate site na ${allowedRadius}m radius ma aavo.`
+          `❌ Punch Rejected!\n\nYou are ${distRounded}m away from your assigned site (${assignedSite.name}).\n\nPlease move within the ${allowedRadius}m site boundary to punch attendance.`
         );
         return null;
       }
@@ -231,11 +231,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       };
     } catch (err: any) {
       if (err.code === 1) { // PERMISSION_DENIED
-        alert("❌ Location Permission Required!\n\nPunch karva mate Phone nu GPS Location ON karo ane browser ma Location permission Allow karo.");
+        alert("❌ Location Permission Required!\n\nPlease turn on your device GPS location and allow location access in your browser to record attendance.");
       } else if (err.code === 2) { // POSITION_UNAVAILABLE
-        alert("❌ GPS Signal Not Available!\n\nKrupya phone nu Location/GPS on karo ane thodi var ma fari prayas karo.");
+        alert("❌ GPS Signal Not Available!\n\nPlease ensure your device GPS is enabled and try again in an open area.");
       } else if (err.code === 3) { // TIMEOUT
-        alert("❌ GPS Timeout!\n\nLocation melvavama var lagi. Krupya open area ma aavi ne fari try karo.");
+        alert("❌ GPS Request Timed Out!\n\nUnable to retrieve accurate GPS location in time. Please try again.");
       } else {
         alert("❌ Location Error: " + err.message);
       }
@@ -292,7 +292,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     setLoading(true);
     setModalError(null);
 
-    // 1. Enforce live GPS verification
     const verifiedLocation = await getVerifiedLiveLocation();
     if (!verifiedLocation) {
       setLoading(false);
@@ -380,7 +379,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     setLoading(true);
     setModalError(null);
 
-    // 1. Enforce live GPS verification
     const verifiedLocation = await getVerifiedLiveLocation();
     if (!verifiedLocation) {
       setLoading(false);
