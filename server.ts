@@ -97,7 +97,7 @@ db.exec(`
   );
 
   CREATE TABLE IF NOT EXISTS sheet_settings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id INTEGER PRIMARY KEY,
     spreadsheet_id TEXT,
     users_sheet_name TEXT DEFAULT 'Users',
     attendance_sheet_name TEXT DEFAULT 'Attendance',
@@ -119,9 +119,12 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS sites (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT UNIQUE NOT NULL,
+    address TEXT,
     latitude REAL NOT NULL,
     longitude REAL NOT NULL,
     radius REAL DEFAULT 150 NOT NULL,
+    work_start_time TEXT DEFAULT '10:00',
+    work_end_time TEXT DEFAULT '19:00',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
@@ -136,11 +139,18 @@ db.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
     date TEXT NOT NULL,
+    start_date TEXT,
+    end_date TEXT,
     check_in TEXT,
     check_out TEXT,
     status TEXT DEFAULT 'PENDING',
     reason TEXT,
     site_name TEXT,
+    type TEXT DEFAULT 'CORRECTION',
+    half_day_slot TEXT,
+    admin_comment TEXT,
+    actioned_at DATETIME,
+    actioned_by TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(user_id) REFERENCES users(id)
   );
@@ -181,12 +191,12 @@ if (!userTableInfo.some(col => col.name === 'work_start_time')) runMigration("ad
 if (!userTableInfo.some(col => col.name === 'work_end_time')) runMigration("add work_end_time", "ALTER TABLE users ADD COLUMN work_end_time TEXT DEFAULT '19:00'");
 if (!userTableInfo.some(col => col.name === 'registration_id')) runMigration("add registration_id", "ALTER TABLE users ADD COLUMN registration_id TEXT UNIQUE");
 if (!userTableInfo.some(col => col.name === 'country')) runMigration("add country", "ALTER TABLE users ADD COLUMN country TEXT");
-if (!userTableInfo.some(col => col.name === 'site_name')) runMigration("add site_name", "ALTER TABLE users ADD COLUMN site_name TEXT");
+if (!userTableInfo.some(col => col.name === 'site_name')) runMigration("add site_name", "ALTER TABLE users ADD COLUMN site_name TEXT DEFAULT 'ARAMUS RUDRA'");
 if (!userTableInfo.some(col => col.name === 'password')) runMigration("add password", "ALTER TABLE users ADD COLUMN password TEXT");
 if (!userTableInfo.some(col => col.name === 'bound_device_id')) runMigration("add bound_device_id", "ALTER TABLE users ADD COLUMN bound_device_id TEXT");
 if (!userTableInfo.some(col => col.name === 'last_device_info')) runMigration("add last_device_info", "ALTER TABLE users ADD COLUMN last_device_info TEXT");
 if (!userTableInfo.some(col => col.name === 'monthly_salary')) runMigration("add monthly_salary", "ALTER TABLE users ADD COLUMN monthly_salary REAL DEFAULT 0");
-if (!userTableInfo.some(col => col.name === 'designation')) runMigration("add designation", "ALTER TABLE users ADD COLUMN designation TEXT");
+if (!userTableInfo.some(col => col.name === 'designation')) runMigration("add designation", "ALTER TABLE users ADD COLUMN designation TEXT DEFAULT 'Staff'");
 if (!userTableInfo.some(col => col.name === 'date_of_joining')) runMigration("add date_of_joining", "ALTER TABLE users ADD COLUMN date_of_joining TEXT");
 if (!userTableInfo.some(col => col.name === 'date_of_birth')) runMigration("add date_of_birth", "ALTER TABLE users ADD COLUMN date_of_birth TEXT");
 if (!userTableInfo.some(col => col.name === 'emergency_contact')) runMigration("add emergency_contact", "ALTER TABLE users ADD COLUMN emergency_contact TEXT");
@@ -232,7 +242,7 @@ const settingsTableInfo = db.prepare("PRAGMA table_info(sheet_settings)").all() 
 if (!settingsTableInfo.some(col => col.name === 'web_app_url')) runMigration("add web_app_url", "ALTER TABLE sheet_settings ADD COLUMN web_app_url TEXT");
 if (!settingsTableInfo.some(col => col.name === 'is_locked')) runMigration("add is_locked", "ALTER TABLE sheet_settings ADD COLUMN is_locked INTEGER DEFAULT 1");
 
-// Seed Departments, Master Designations, Super Admin & Director
+// Seed Master Departments
 const deptCount = (db.prepare("SELECT COUNT(*) as count FROM departments").get() as any).count;
 if (deptCount === 0) {
   const depts = [
@@ -246,6 +256,7 @@ if (deptCount === 0) {
   for (const d of depts) { stmt.run(d[0], d[1]); }
 }
 
+// Seed Master Designations
 const desigCount = (db.prepare("SELECT COUNT(*) as count FROM designations").get() as any).count;
 if (desigCount === 0) {
   const defaultDesignations = [
@@ -279,45 +290,110 @@ if (desigCount === 0) {
   for (const name of defaultDesignations) { stmt.run(name); }
 }
 
+// Default Super Admin & Director
 const existingAdmin = db.prepare("SELECT id FROM users WHERE role = 'super_admin' OR registration_id = 'ADMIN-01'").get();
 if (!existingAdmin) {
-  db.prepare("INSERT INTO users (registration_id, name, email, role, department_id, password, designation, allowed_devices) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run("ADMIN-01", "Abhishek Bhatt (Admin)", "admin@rudra.com", "super_admin", 1, "admin123", "Chief Executive Officer (CEO)", 99);
+  db.prepare("INSERT INTO users (registration_id, name, email, role, department_id, password, designation, site_name, allowed_devices) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run("ADMIN-01", "Abhishek Bhatt (Admin)", "admin@rudra.com", "super_admin", 1, "admin123", "Chief Executive Officer (CEO)", "ARAMUS RUDRA", 99);
 }
 
 const existingDirector = db.prepare("SELECT id FROM users WHERE role = 'director' OR registration_id = 'DIR-01'").get();
 if (!existingDirector) {
-  db.prepare("INSERT INTO users (registration_id, name, email, role, department_id, password, designation, allowed_devices) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run("DIR-01", "Director / Partner", "director@rudra.com", "director", 1, "director123", "Managing Director (MD)", 99);
+  db.prepare("INSERT INTO users (registration_id, name, email, role, department_id, password, designation, site_name, allowed_devices) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run("DIR-01", "Director / Partner", "director@rudra.com", "director", 1, "director123", "Managing Director (MD)", "ARAMUS RUDRA", 99);
 }
 
-// Ensure row id=1 exists permanently in sheet_settings
-const settingsRow = db.prepare("SELECT * FROM sheet_settings WHERE id = 1").get();
-if (!settingsRow) {
-  db.prepare("INSERT OR IGNORE INTO sheet_settings (id, users_sheet_name, attendance_sheet_name, sync_enabled, is_locked) VALUES (1, 'Users', 'Attendance', 1, 1)").run();
+// Ensure default site exists
+const siteCountCheck = db.prepare("SELECT COUNT(*) as count FROM sites").get() as any;
+if (siteCountCheck.count === 0) {
+  db.prepare(`
+    INSERT INTO sites (name, address, latitude, longitude, radius, work_start_time, work_end_time)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    "ARAMUS RUDRA",
+    "Plot 4 and 4a, Sector 18 Rd, Sector 18, Kharghar, Panvel, Maharashtra 410210",
+    19.04574,
+    73.08025,
+    150,
+    "10:00",
+    "19:00"
+  );
 }
 
-const geofenceSettingsCount = db.prepare("SELECT COUNT(*) as count FROM geofence_settings").get() as { count: number };
-if (geofenceSettingsCount.count === 0) {
-  db.prepare("INSERT INTO geofence_settings (id, enabled, latitude, longitude, radius) VALUES (1, 0, 23.0225, 72.5714, 150.0)").run();
-}
+// Persistent Storage Backup and Restoration Engine
+const BACKUP_FILE = path.join(process.cwd(), "app_data_backup.json");
 
-const sitesCount = db.prepare("SELECT COUNT(*) as count FROM sites").get() as { count: number };
-if (sitesCount.count === 0) {
-  const defaultSites = [
-    { name: 'Headquarters', lat: 23.0225, lng: 72.5714, rad: 150 },
-    { name: 'Site Velocity', lat: 23.0645, lng: 72.5085, rad: 200 }
-  ];
-  const stmt = db.prepare("INSERT INTO sites (name, latitude, longitude, radius) VALUES (?, ?, ?, ?)");
-  for (const s of defaultSites) {
-    try { stmt.run(s.name, s.lat, s.lng, s.rad); } catch (_) {}
+function restoreDatabaseFromJson() {
+  if (!fs.existsSync(BACKUP_FILE)) return;
+  try {
+    const raw = fs.readFileSync(BACKUP_FILE, "utf8");
+    const data = JSON.parse(raw);
+    
+    // Restore sheet settings
+    if (data.sheet_settings && Array.isArray(data.sheet_settings) && data.sheet_settings.length > 0) {
+      const s = data.sheet_settings[0];
+      if (s.web_app_url) {
+        db.prepare(`
+          INSERT INTO sheet_settings (id, spreadsheet_id, users_sheet_name, attendance_sheet_name, web_app_url, sync_enabled, is_locked)
+          VALUES (1, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            web_app_url = excluded.web_app_url,
+            is_locked = excluded.is_locked
+        `).run(s.spreadsheet_id || null, s.users_sheet_name || 'Users', s.attendance_sheet_name || 'Attendance', s.web_app_url, 1, 1);
+      }
+    }
+
+    // Restore sites
+    if (Array.isArray(data.sites) && data.sites.length > 0) {
+      for (const st of data.sites) {
+        db.prepare(`
+          INSERT INTO sites (id, name, address, latitude, longitude, radius, work_start_time, work_end_time)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(name) DO UPDATE SET
+            address = excluded.address,
+            latitude = excluded.latitude,
+            longitude = excluded.longitude,
+            radius = excluded.radius,
+            work_start_time = excluded.work_start_time,
+            work_end_time = excluded.work_end_time
+        `).run(st.id || null, st.name, st.address || null, Number(st.latitude), Number(st.longitude), Number(st.radius) || 150, st.work_start_time || '10:00', st.work_end_time || '19:00');
+      }
+    }
+
+    // Restore users
+    if (Array.isArray(data.users) && data.users.length > 0) {
+      for (const u of data.users) {
+        db.prepare(`
+          INSERT INTO users (id, registration_id, name, username, email, phone, role, department_id, site_name, password, designation, allowed_devices, work_start_time, work_end_time, monthly_salary, date_of_joining)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(registration_id) DO UPDATE SET
+            name = excluded.name,
+            username = excluded.username,
+            email = excluded.email,
+            phone = excluded.phone,
+            role = excluded.role,
+            site_name = excluded.site_name,
+            password = excluded.password,
+            designation = excluded.designation,
+            monthly_salary = excluded.monthly_salary,
+            date_of_joining = excluded.date_of_joining
+        `).run(
+          u.id || null, u.registration_id, u.name, u.username || null, u.email || null, u.phone || null,
+          u.role || 'user', u.department_id || 1, u.site_name || 'ARAMUS RUDRA', u.password || 'password123',
+          u.designation || 'Staff', Number(u.allowed_devices) || 1, u.work_start_time || '10:00',
+          u.work_end_time || '19:00', Number(u.monthly_salary) || 0, u.date_of_joining || ''
+        );
+      }
+    }
+
+    console.log("Persistent state synchronized successfully from app_data_backup.json");
+  } catch (err: any) {
+    console.warn("Could not load from app_data_backup.json:", err.message);
   }
 }
-
-// Durable File Backup Mechanism
-const BACKUP_FILE = path.join(process.cwd(), "app_data_backup.json");
 
 function backupDatabaseToJson() {
   try {
     const backupData = {
+      sheet_settings: db.prepare("SELECT * FROM sheet_settings").all(),
       users: db.prepare("SELECT * FROM users").all(),
       attendance: db.prepare("SELECT * FROM attendance").all(),
       sites: db.prepare("SELECT * FROM sites").all(),
@@ -333,6 +409,9 @@ function backupDatabaseToJson() {
     console.error("Failed to backup database to JSON:", err.message);
   }
 }
+
+// Initial restore call on server startup
+restoreDatabaseFromJson();
 
 async function fetchWithRedirect(url: string, options: any = {}): Promise<Response> {
   const maxRedirects = 5;
@@ -368,10 +447,7 @@ async function fetchWithRedirect(url: string, options: any = {}): Promise<Respon
   throw new Error('Too many redirects');
 }
 
-// =========================================================================
-// REAL-TIME CLOUD ENGINE (Push-Only Event Driven Sync)
-// =========================================================================
-
+// Real-Time Push Engine
 async function syncFullDatabaseToSheets(): Promise<{ success: boolean; message: string }> {
   try {
     const settings = db.prepare("SELECT * FROM sheet_settings WHERE id = 1").get() as any;
@@ -444,7 +520,7 @@ async function syncFullDatabaseToSheets(): Promise<{ success: boolean; message: 
 function triggerLiveSync(context = "general") {
   syncFullDatabaseToSheets().then(res => {
     if (res.success) {
-      console.log(`[GoogleSheet Live Sync] Updated successfully for: ${context}`);
+      console.log(`[GoogleSheet Live Sync] Triggered successfully for: ${context}`);
     }
   }).catch(e => {
     console.warn(`[GoogleSheet Live Sync] Background sync warning:`, e.message);
@@ -472,7 +548,7 @@ async function appendAttendanceLogLive(userId: number, date: string, checkInTime
           registration_id: user.registration_id || "",
           name: user.name,
           designation: user.designation || "Staff",
-          site_name: user.site_name || "Headquarters",
+          site_name: user.site_name || "ARAMUS RUDRA",
           status: status === 'P' ? 'Present' : (status === 'L' ? 'Late' : (status === 'Half Day' ? 'Half Day' : status)),
           method: method || "App",
           created_at: new Date().toISOString()
@@ -488,14 +564,15 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  app.use(express.json());
+  app.use(express.json({ limit: "50mb" }));
+  app.use(express.urlencoded({ limit: "50mb", extended: true }));
   app.use(cookieParser());
 
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
   });
 
-  // Login
+  // Login Handler
   app.post("/api/login", (req, res) => {
     const { identifier, password } = req.body;
     const searchVal = (identifier || "").trim();
@@ -519,10 +596,7 @@ async function startServer() {
     }
   });
 
-  // =========================================================================
-  // UNIVERSAL PASSWORD CHANGE HANDLER (ALL ROLES: ADMIN, DIRECTOR, STAFF)
-  // Supports PUT / POST, all route variations and parameter names
-  // =========================================================================
+  // Universal Password Change Handler (Universal Support for all paths & methods)
   const handleUniversalPasswordChange = (req: express.Request, res: express.Response) => {
     const { 
       userId, id, user_id, registration_id, email,
@@ -535,7 +609,7 @@ async function startServer() {
     const cleanCurrPass = (currentPassword || current_password || oldPassword || old_password || "").trim();
 
     if (!target) {
-      return res.status(400).json({ success: false, message: "User identification (ID / Reg ID / Email) is required." });
+      return res.status(400).json({ success: false, message: "User identifier is required." });
     }
     if (!cleanNewPass) {
       return res.status(400).json({ success: false, message: "New password cannot be empty." });
@@ -554,38 +628,29 @@ async function startServer() {
         return res.status(404).json({ success: false, message: "User account not found." });
       }
 
-      // Check current password if provided and user has existing password
       if (cleanCurrPass && user.password && user.password !== cleanCurrPass) {
-        return res.status(400).json({ success: false, message: "Current password is incorrect." });
+        return res.status(400).json({ success: false, message: "Current password does not match." });
       }
 
       db.prepare("UPDATE users SET password = ? WHERE id = ?").run(cleanNewPass, user.id);
       backupDatabaseToJson();
       triggerLiveSync('change_password');
 
-      return res.json({ 
-        success: true, 
-        message: "Password updated successfully!",
-        userId: user.id 
-      });
+      return res.json({ success: true, message: "Password updated successfully!", userId: user.id });
     } catch (e: any) {
-      return res.status(500).json({ success: false, message: e.message || "Failed to update password." });
+      return res.status(500).json({ success: false, message: e.message });
     }
   };
 
-  // Mount universal password endpoints for ALL methods and route paths
-  app.post("/api/users/change-password", handleUniversalPasswordChange);
-  app.put("/api/users/change-password", handleUniversalPasswordChange);
-  app.post("/api/change-password", handleUniversalPasswordChange);
-  app.put("/api/change-password", handleUniversalPasswordChange);
-  app.post("/api/auth/change-password", handleUniversalPasswordChange);
-  app.put("/api/auth/change-password", handleUniversalPasswordChange);
-  app.post("/api/users/:id/change-password", handleUniversalPasswordChange);
-  app.put("/api/users/:id/change-password", handleUniversalPasswordChange);
-  app.post("/api/users/:id/password", handleUniversalPasswordChange);
-  app.put("/api/users/:id/password", handleUniversalPasswordChange);
+  app.all([
+    "/api/users/change-password",
+    "/api/change-password",
+    "/api/auth/change-password",
+    "/api/users/:id/change-password",
+    "/api/users/:id/password"
+  ], handleUniversalPasswordChange);
 
-  // Users & Staff
+  // Users & Staff Management
   app.get("/api/users", (req, res) => {
     const { siteName } = req.query;
     let users;
@@ -641,7 +706,7 @@ async function startServer() {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         cleanRegId, derivedUsername, name.trim(), cleanEmail, cleanPhone, country || null, 
-        role || 'user', department_id || null, site_name || 'Headquarters', defaultPwd, 
+        role || 'user', department_id || null, site_name || 'ARAMUS RUDRA', defaultPwd, 
         designation || 'Staff', Number(allowed_devices) || 1, work_start_time || '10:00', 
         work_end_time || '19:00', Number(monthly_salary) || 0, 
         date_of_joining || new Date().toISOString().split('T')[0]
@@ -815,7 +880,7 @@ async function startServer() {
     }
   });
 
-  // Sheet Settings API (Permanent Lock & Save with UPSERT)
+  // Sheet Settings API (Permanent Lock & Save)
   app.get("/api/sheet-settings", (req, res) => {
     try {
       let settings = db.prepare("SELECT * FROM sheet_settings WHERE id = 1").get() as any;
@@ -908,7 +973,7 @@ async function startServer() {
                     site_name = excluded.site_name,
                     designation = excluded.designation,
                     monthly_salary = excluded.monthly_salary
-                `).run(u.registration_id || null, u.name, u.email || null, u.phone || null, u.role || 'user', u.site_name || 'Headquarters', u.designation || 'Staff', Number(u.monthly_salary) || 0);
+                `).run(u.registration_id || null, u.name, u.email || null, u.phone || null, u.role || 'user', u.site_name || 'ARAMUS RUDRA', u.designation || 'Staff', Number(u.monthly_salary) || 0);
               } catch (_) {}
             }
           }
@@ -922,14 +987,14 @@ async function startServer() {
     }
   });
 
-// =========================================================================
-  // SITES & GEOFENCE APIS (Universal ID / Name Update with Full Fallback)
+  // =========================================================================
+  // UNIVERSAL SITES & GEOFENCE APIS (Radius, Coordinates & Fallbacks)
   // =========================================================================
   app.get("/api/sites", (req, res) => {
-    res.json(db.prepare("SELECT * FROM sites ORDER BY name ASC").all());
+    res.json(db.prepare("SELECT * FROM sites ORDER BY id ASC").all());
   });
 
-  const handleCreateOrUpdateSite = (req: express.Request, res: express.Response) => {
+  const handleUniversalSiteSave = (req: express.Request, res: express.Response) => {
     const { id, name, site_name, address, latitude, longitude, radius, work_start_time, work_end_time } = req.body;
     const targetId = req.params.id || id;
     const targetName = (name || site_name || "").trim();
@@ -973,13 +1038,13 @@ async function startServer() {
         triggerLiveSync('update_site');
 
         const updated = db.prepare("SELECT * FROM sites WHERE id = ?").get(existingSite.id);
-        return res.json({ success: true, site: updated, message: "Site geofence updated successfully!" });
+        return res.json({ success: true, site: updated, sites: db.prepare("SELECT * FROM sites").all(), message: "Site geofence updated successfully!" });
       } else {
         if (!targetName) {
           return res.status(400).json({ success: false, message: "Site Name is required" });
         }
-        const cleanLat = latitude ? Number(latitude) : 23.0225;
-        const cleanLng = longitude ? Number(longitude) : 72.5714;
+        const cleanLat = latitude ? Number(latitude) : 19.04574;
+        const cleanLng = longitude ? Number(longitude) : 73.08025;
         const cleanRadius = radius ? Number(radius) : 150;
 
         const result = db.prepare(`
@@ -999,31 +1064,32 @@ async function startServer() {
         triggerLiveSync('create_site');
 
         const newSite = db.prepare("SELECT * FROM sites WHERE id = ?").get(result.lastInsertRowid);
-        return res.json({ success: true, id: result.lastInsertRowid, site: newSite, message: "Site created successfully!" });
+        return res.json({ success: true, id: result.lastInsertRowid, site: newSite, sites: db.prepare("SELECT * FROM sites").all(), message: "Site created successfully!" });
       }
     } catch (e: any) {
       return res.status(500).json({ success: false, message: e.message });
     }
   };
 
-  app.post("/api/sites", handleCreateOrUpdateSite);
-  app.post("/api/super_admin/sites", handleCreateOrUpdateSite);
-  app.put("/api/sites", handleCreateOrUpdateSite);
-  app.put("/api/super_admin/sites", handleCreateOrUpdateSite);
-  app.put("/api/sites/:id", handleCreateOrUpdateSite);
-  app.put("/api/super_admin/sites/:id", handleCreateOrUpdateSite);
-  app.post("/api/sites/:id", handleCreateOrUpdateSite);
-  app.post("/api/sites/:id/update", handleCreateOrUpdateSite);
-
-  app.delete(["/api/sites/:id", "/api/super_admin/sites/:id"], (req, res) => {
-    try {
-      db.prepare("DELETE FROM sites WHERE id = ?").run(req.params.id);
-      backupDatabaseToJson();
-      triggerLiveSync('delete_site');
-      res.json({ success: true, message: "Site deleted successfully" });
-    } catch (e: any) {
-      res.status(500).json({ success: false, message: e.message });
+  app.all([
+    "/api/sites",
+    "/api/super_admin/sites",
+    "/api/sites/:id",
+    "/api/super_admin/sites/:id",
+    "/api/sites/:id/update"
+  ], (req, res, next) => {
+    if (req.method === 'GET') return next();
+    if (req.method === 'DELETE') {
+      try {
+        db.prepare("DELETE FROM sites WHERE id = ?").run(req.params.id);
+        backupDatabaseToJson();
+        triggerLiveSync('delete_site');
+        return res.json({ success: true, message: "Site deleted successfully" });
+      } catch (e: any) {
+        return res.status(500).json({ success: false, message: e.message });
+      }
     }
+    return handleUniversalSiteSave(req, res);
   });
 
   app.get("/api/geofence-settings", (req, res) => {
@@ -1037,7 +1103,7 @@ async function startServer() {
     res.json({ success: true, message: "Geofence settings updated." });
   });
 
-  // Requests / Approvals
+  // Requests / Approvals Workflow
   app.get("/api/attendance/requests", (req, res) => {
     const requests = db.prepare(`
       SELECT r.*, u.name as user_name, u.registration_id, u.site_name as user_site_name, u.designation
@@ -1173,7 +1239,7 @@ async function startServer() {
     res.json(records);
   });
 
-  // Vite middleware
+  // Vite SPA Handler
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
