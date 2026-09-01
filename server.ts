@@ -518,7 +518,34 @@ async function startServer() {
       res.status(401).json({ success: false, message: "Incorrect password." });
     }
   });
+// Change Password API (Director, Admin & Staff)
+  app.post(["/api/users/change-password", "/api/change-password", "/api/users/:id/change-password"], (req, res) => {
+    const { userId, currentPassword, newPassword } = req.body;
+    const targetId = req.params.id || userId;
 
+    if (!targetId || !newPassword || !newPassword.trim()) {
+      return res.status(400).json({ success: false, message: "User ID and New Password are required." });
+    }
+
+    try {
+      const user = db.prepare("SELECT * FROM users WHERE id = ? OR registration_id = ?").get(targetId, targetId) as any;
+      if (!user) {
+        return res.status(404).json({ success: false, message: "User not found." });
+      }
+
+      if (currentPassword && currentPassword.trim() && user.password && user.password !== currentPassword.trim()) {
+        return res.status(400).json({ success: false, message: "Current password does not match." });
+      }
+
+      db.prepare("UPDATE users SET password = ? WHERE id = ?").run(newPassword.trim(), user.id);
+      backupDatabaseToJson();
+      triggerLiveSync('change_password');
+
+      res.json({ success: true, message: "Password updated successfully!" });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
   // Users & Staff
   app.get("/api/users", (req, res) => {
     const { siteName } = req.query;
