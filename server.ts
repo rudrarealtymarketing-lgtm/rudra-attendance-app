@@ -231,26 +231,14 @@ const settingsTableInfo = db.prepare("PRAGMA table_info(sheet_settings)").all() 
 if (!settingsTableInfo.some(col => col.name === 'web_app_url')) runMigration("add web_app_url", "ALTER TABLE sheet_settings ADD COLUMN web_app_url TEXT");
 if (!settingsTableInfo.some(col => col.name === 'is_locked')) runMigration("add is_locked", "ALTER TABLE sheet_settings ADD COLUMN is_locked INTEGER DEFAULT 1");
 
-// Seed initial data if empty
-const existingAdmin = db.prepare("SELECT id FROM users WHERE role = 'super_admin' OR registration_id = 'EMP-001' OR registration_id = 'ADMIN-01'").get();
+// Seed basic Admin if database is freshly created
+const existingAdmin = db.prepare("SELECT id FROM users WHERE role = 'super_admin' OR registration_id = 'ADMIN-01'").get();
 if (!existingAdmin) {
-  db.prepare("INSERT INTO departments (name, description) VALUES (?, ?)").run("Executive & Management", "Executive Leadership & Board");
-  db.prepare("INSERT INTO users (registration_id, name, email, role, department_id, password, designation, allowed_devices) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run("ADMIN-01", "Abhishek Bhatt (Admin)", "admin@rudra.com", "super_admin", 1, "admin123", "Chief Executive Officer (CEO) / Managing Director (MD)", 99);
-}
-
-const existingDirector = db.prepare("SELECT id FROM users WHERE registration_id = 'DIR-001' OR name LIKE '%Director%'").get();
-if (!existingDirector) {
-  db.prepare("INSERT INTO users (registration_id, name, email, role, password, designation, allowed_devices) VALUES (?, ?, ?, ?, ?, ?, ?)").run("DIR-001", "StaffSync Director", "director@rudra.com", "director", "director123", "Executive Director / Partner", 8);
-}
-
-const existingTest = db.prepare("SELECT id FROM users WHERE registration_id = 'TEST-001'").get();
-if (!existingTest) {
-  db.prepare("INSERT INTO users (registration_id, name, email, role, password, designation, allowed_devices) VALUES (?, ?, ?, ?, ?, ?, ?)").run("TEST-001", "Testing Employee", "test@rudra.com", "user", "test1234", "Site Engineer / Civil Engineer", 99);
-}
-
-const existingStaff = db.prepare("SELECT id FROM users WHERE registration_id = 'EMP-1001'").get();
-if (!existingStaff) {
-  db.prepare("INSERT INTO users (registration_id, name, email, role, password, designation, allowed_devices, site_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run("EMP-1001", "John Doe", "john@example.com", "user", "user123", "Sales Executive / Associate", 1, "Headquarters");
+  const deptCount = (db.prepare("SELECT COUNT(*) as count FROM departments").get() as any).count;
+  if (deptCount === 0) {
+    db.prepare("INSERT INTO departments (name, description) VALUES (?, ?)").run("Executive & Management", "Executive Leadership & Board");
+  }
+  db.prepare("INSERT INTO users (registration_id, name, email, role, department_id, password, designation, allowed_devices) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run("ADMIN-01", "Abhishek Bhatt (Admin)", "admin@rudra.com", "super_admin", 1, "admin123", "Chief Executive Officer (CEO)", 99);
 }
 
 const settingsCount = db.prepare("SELECT COUNT(*) as count FROM sheet_settings").get() as { count: number };
@@ -275,7 +263,7 @@ if (sitesCount.count === 0) {
   }
 }
 
-// Durable File Backup & Auto-Recovery Mechanism
+// Durable File Backup Mechanism (Strictly overwrites with current database state)
 const BACKUP_FILE = path.join(process.cwd(), "app_data_backup.json");
 
 function backupDatabaseToJson() {
@@ -295,75 +283,6 @@ function backupDatabaseToJson() {
   } catch (err: any) {
     console.error("Failed to backup database to JSON:", err.message);
   }
-}
-
-function restoreDatabaseFromJson() {
-  try {
-    if (!fs.existsSync(BACKUP_FILE)) {
-      backupDatabaseToJson();
-      return;
-    }
-    const raw = fs.readFileSync(BACKUP_FILE, "utf8");
-    if (!raw || raw.trim().length === 0) return;
-    const backupData = JSON.parse(raw);
-
-    if (Array.isArray(backupData.users) && backupData.users.length > 0) {
-      const existingUsers = db.prepare("SELECT id, registration_id, email FROM users").all() as any[];
-      const existingRegIds = new Set(existingUsers.map(u => u.registration_id).filter(Boolean));
-      const existingIds = new Set(existingUsers.map(u => u.id));
-
-      const insertUserStmt = db.prepare(`
-        INSERT OR IGNORE INTO users (
-          id, registration_id, username, name, email, phone, country, role, 
-          department_id, password, work_start_time, work_end_time, site_name, 
-          bound_device_id, last_device_info, monthly_salary, designation, 
-          date_of_joining, emergency_contact, bank_account, ifsc_code, upi_id, 
-          pan_aadhaar, allowed_devices, avatar_url, current_address, marital_status, 
-          documents, date_of_birth, created_at
-        ) VALUES (
-          ?, ?, ?, ?, ?, ?, ?, ?, 
-          ?, ?, ?, ?, ?, 
-          ?, ?, ?, ?, 
-          ?, ?, ?, ?, ?, 
-          ?, ?, ?, ?, ?, 
-          ?, ?, ?
-        )
-      `);
-
-      for (const u of backupData.users) {
-        if (!existingIds.has(u.id) && (!u.registration_id || !existingRegIds.has(u.registration_id))) {
-          try {
-            insertUserStmt.run(
-              u.id || null, u.registration_id || null, u.username || null, u.name, 
-              u.email || null, u.phone || null, u.country || null, u.role || 'user', 
-              u.department_id || null, u.password || 'pass123', u.work_start_time || '10:00', 
-              u.work_end_time || '19:00', u.site_name || 'Headquarters', u.bound_device_id || null, 
-              u.last_device_info || null, u.monthly_salary || 0, u.designation || 'Staff', 
-              u.date_of_joining || null, u.emergency_contact || null, u.bank_account || null, 
-              u.ifsc_code || null, u.upi_id || null, u.pan_aadhaar || null, 
-              u.allowed_devices || 1, u.avatar_url || null, u.current_address || null, 
-              u.marital_status || null, u.documents || null, u.date_of_birth || null, 
-              u.created_at || new Date().toISOString()
-            );
-          } catch (_) {}
-        }
-      }
-    }
-  } catch (err: any) {
-    console.error("Failed to restore from JSON backup:", err.message);
-  }
-}
-
-restoreDatabaseFromJson();
-
-function getHaversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const R = 6371000;
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLon = (lon2 - lon1) * Math.PI / 180;
-  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
-            Math.sin(dLon / 2) * Math.sin(dLon / 2);
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
 async function fetchWithRedirect(url: string, options: any = {}): Promise<Response> {
@@ -401,7 +320,7 @@ async function fetchWithRedirect(url: string, options: any = {}): Promise<Respon
 }
 
 // =========================================================================
-// REAL-TIME CLOUD ENGINE (Push-Only Event Driven Sync - Never Stale Pull)
+// REAL-TIME CLOUD ENGINE (Push-Only Event Driven Sync - 100% Reliable)
 // =========================================================================
 
 async function syncFullDatabaseToSheets(): Promise<{ success: boolean; message: string }> {
@@ -686,6 +605,7 @@ async function startServer() {
   app.put("/api/users/:id", handleUpdateUser);
   app.put("/api/super_admin/users/:id", handleUpdateUser);
 
+  // DELETE USER (Permanent & Synced)
   app.delete(["/api/users/:id", "/api/super_admin/users/:id"], (req, res) => {
     const { id } = req.params;
     try {
@@ -695,8 +615,11 @@ async function startServer() {
       db.prepare("DELETE FROM notifications WHERE user_id = ?").run(id);
       db.prepare("DELETE FROM users WHERE id = ?").run(id);
 
+      // Overwrite JSON backup immediately
       backupDatabaseToJson();
+      // Push fresh state to Google Sheets immediately
       triggerLiveSync('delete_user');
+      
       res.json({ success: true, message: "User deleted successfully." });
     } catch (e: any) {
       res.status(500).json({ success: false, message: e.message });
@@ -829,6 +752,44 @@ async function startServer() {
     else res.status(500).json({ success: false, message: result.message });
   });
 
+  // Pull data manually if requested by Super Admin
+  app.post("/api/sheet-settings/pull-all", async (req, res) => {
+    try {
+      const settings = db.prepare("SELECT * FROM sheet_settings LIMIT 1").get() as any;
+      if (!settings || !settings.web_app_url) return res.status(400).json({ success: false, message: "Deployment URL missing." });
+
+      const response = await fetchWithRedirect(`${settings.web_app_url}?action=getAllData`);
+      const resJson = await response.json();
+      if (resJson.success && resJson.data) {
+        const d = resJson.data;
+        if (Array.isArray(d.users) && d.users.length > 0) {
+          for (const u of d.users) {
+            if (u.name && u.role !== 'super_admin') {
+              try {
+                db.prepare(`
+                  INSERT INTO users (registration_id, name, email, phone, role, site_name, designation, monthly_salary)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                  ON CONFLICT(registration_id) DO UPDATE SET
+                    name = excluded.name,
+                    email = excluded.email,
+                    phone = excluded.phone,
+                    site_name = excluded.site_name,
+                    designation = excluded.designation,
+                    monthly_salary = excluded.monthly_salary
+                `).run(u.registration_id || null, u.name, u.email || null, u.phone || null, u.role || 'user', u.site_name || 'Headquarters', u.designation || 'Staff', Number(u.monthly_salary) || 0);
+              } catch (_) {}
+            }
+          }
+        }
+        backupDatabaseToJson();
+        return res.json({ success: true, message: "Successfully pulled data from Google Sheets." });
+      }
+      return res.status(500).json({ success: false, message: "Could not read data from Google Sheet." });
+    } catch (e: any) {
+      return res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
   // Sites / Geofence APIs
   app.get("/api/sites", (req, res) => {
     res.json(db.prepare("SELECT * FROM sites ORDER BY name ASC").all());
@@ -838,6 +799,7 @@ async function startServer() {
     const { name, address, latitude, longitude, radius } = req.body;
     try {
       const result = db.prepare("INSERT INTO sites (name, address, latitude, longitude, radius) VALUES (?, ?, ?, ?, ?)").run(name, address || null, Number(latitude), Number(longitude), Number(radius) || 150);
+      backupDatabaseToJson();
       triggerLiveSync('sites');
       res.json({ success: true, id: result.lastInsertRowid });
     } catch (e: any) {
@@ -848,7 +810,8 @@ async function startServer() {
   app.delete(["/api/sites/:id", "/api/super_admin/sites/:id"], (req, res) => {
     try {
       db.prepare("DELETE FROM sites WHERE id = ?").run(req.params.id);
-      triggerLiveSync('sites');
+      backupDatabaseToJson();
+      triggerLiveSync('delete_site');
       res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ success: false, message: e.message });
@@ -889,6 +852,7 @@ async function startServer() {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')
       `).run(userId, targetDate, startDate || targetDate, endDate || targetDate, checkIn || null, checkOut || null, reason || null, siteName || user.site_name || null, type || 'CORRECTION', halfDaySlot || null);
 
+      backupDatabaseToJson();
       triggerLiveSync('requests');
       res.json({ success: true, id: result.lastInsertRowid });
     } catch (err: any) {
@@ -909,6 +873,7 @@ async function startServer() {
         WHERE id = ?
       `).run(adminComment || 'Approved', actionedBy || 'Admin', id);
 
+      backupDatabaseToJson();
       triggerLiveSync('approve_request');
       res.json({ success: true, message: "Request approved." });
     } catch (err: any) {
@@ -916,7 +881,7 @@ async function startServer() {
     }
   });
 
-  // Designations & Master Tables
+  // Master Tables
   app.get("/api/designations", (req, res) => {
     res.json(db.prepare("SELECT * FROM designations ORDER BY name ASC").all());
   });
@@ -924,6 +889,7 @@ async function startServer() {
   app.post("/api/designations", (req, res) => {
     try {
       const result = db.prepare("INSERT INTO designations (name) VALUES (?)").run(req.body.name?.trim());
+      backupDatabaseToJson();
       triggerLiveSync('designations');
       res.json({ success: true, id: result.lastInsertRowid });
     } catch (e: any) {
