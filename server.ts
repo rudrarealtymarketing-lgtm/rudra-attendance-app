@@ -926,7 +926,7 @@ async function startServer() {
   app.get("/api/sites", (req, res) => {
     res.json(db.prepare("SELECT * FROM sites ORDER BY name ASC").all());
   });
-
+// Create New Site
   app.post(["/api/sites", "/api/super_admin/sites"], (req, res) => {
     const { name, address, latitude, longitude, radius } = req.body;
     try {
@@ -939,7 +939,51 @@ async function startServer() {
     }
   });
 
-  app.delete(["/api/sites/:id", "/api/super_admin/sites/:id"], (req, res) => {
+  // Update Existing Site / Geofence Location & Radius
+  const handleUpdateSite = (req: express.Request, res: express.Response) => {
+    const { id } = req.params;
+    const { name, address, latitude, longitude, radius, work_start_time, work_end_time } = req.body;
+
+    try {
+      const existingSite = db.prepare("SELECT * FROM sites WHERE id = ?").get(id) as any;
+      if (!existingSite) {
+        return res.status(404).json({ success: false, message: "Site not found" });
+      }
+
+      db.prepare(`
+        UPDATE sites
+        SET name = COALESCE(?, name),
+            address = COALESCE(?, address),
+            latitude = COALESCE(?, latitude),
+            longitude = COALESCE(?, longitude),
+            radius = COALESCE(?, radius),
+            work_start_time = COALESCE(?, work_start_time),
+            work_end_time = COALESCE(?, work_end_time)
+        WHERE id = ?
+      `).run(
+        name ? name.trim() : null,
+        address !== undefined ? address : null,
+        latitude !== undefined ? Number(latitude) : null,
+        longitude !== undefined ? Number(longitude) : null,
+        radius !== undefined ? Number(radius) : null,
+        work_start_time !== undefined ? work_start_time : null,
+        work_end_time !== undefined ? work_end_time : null,
+        id
+      );
+
+      backupDatabaseToJson();
+      triggerLiveSync('update_site');
+
+      const updatedSite = db.prepare("SELECT * FROM sites WHERE id = ?").get(id);
+      res.json({ success: true, site: updatedSite, message: "Site geofence updated successfully!" });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  };
+
+  app.put("/api/sites/:id", handleUpdateSite);
+  app.put("/api/super_admin/sites/:id", handleUpdateSite);
+  app.post("/api/sites/:id/update", handleUpdateSite);
     try {
       db.prepare("DELETE FROM sites WHERE id = ?").run(req.params.id);
       backupDatabaseToJson();
