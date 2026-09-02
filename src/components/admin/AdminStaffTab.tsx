@@ -235,10 +235,14 @@ export const AdminStaffTab: React.FC<AdminStaffTabProps> = ({
     }
   };
 
+  // Fixed Reset Device: calls universal endpoint directly
   const handleResetDevice = async (userId: number) => {
     if (!confirm('Unlock hardware device binding for this employee?')) return;
     try {
-      const res = await fetch(`/api/super_admin/users/${userId}/reset_device`, { method: 'POST' });
+      const res = await fetch(`/api/users/${userId}/reset-device`, { 
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
       const data = await res.json();
       if (res.ok && data.success) {
         alert('Hardware device lock reset successfully!');
@@ -417,11 +421,11 @@ export const AdminStaffTab: React.FC<AdminStaffTabProps> = ({
               <div className="flex items-center justify-between text-slate-500">
                 <span>Hardware Binding:</span>
                 <span className={`font-mono text-[10px] px-1.5 py-0.5 rounded font-semibold ${
-                  u.device_fingerprint 
+                  u.bound_device_id 
                     ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300' 
                     : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300'
                 }`}>
-                  {u.device_fingerprint ? '🔒 Bound to Phone' : '🔓 Unlocked (Free)'}
+                  {u.bound_device_id ? '🔒 Bound to Phone' : '🔓 Unlocked (Free)'}
                 </span>
               </div>
             </div>
