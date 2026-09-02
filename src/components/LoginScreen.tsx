@@ -22,14 +22,20 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   const [gpsStatus, setGpsStatus] = useState<'checking' | 'granted' | 'prompt'>('prompt');
   const t = useTranslation(lang);
 
-  // Load saved credentials if present
+  // Load saved credentials & sync persistent device fingerprint
   useEffect(() => {
     const savedId = localStorage.getItem('staffsync_saved_id');
     const savedPwd = localStorage.getItem('staffsync_saved_pwd');
     if (savedId) setIdentifier(savedId);
     if (savedPwd) setPassword(savedPwd);
 
-    // Request GPS Location only (NO camera permission requested)
+    // Ensure persistent device fingerprint exists
+    let deviceId = localStorage.getItem('staffsync_device_fingerprint');
+    if (!deviceId) {
+      deviceId = `dev_${Math.random().toString(36).substring(2, 9)}_${Date.now()}`;
+      localStorage.setItem('staffsync_device_fingerprint', deviceId);
+    }
+
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         () => setGpsStatus('granted'),
@@ -49,13 +55,24 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     setLoading(true);
     setErrorMsg('');
 
+    // Send consistent deviceId to backend
+    let deviceId = localStorage.getItem('staffsync_device_fingerprint');
+    if (!deviceId) {
+      deviceId = `dev_${Math.random().toString(36).substring(2, 9)}_${Date.now()}`;
+      localStorage.setItem('staffsync_device_fingerprint', deviceId);
+    }
+
     try {
       const response = await fetch('/api/login', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-device-id': deviceId
+        },
         body: JSON.stringify({
           identifier: identifier.trim(),
-          password: password.trim()
+          password: password.trim(),
+          deviceId: deviceId
         })
       });
 
@@ -67,7 +84,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         return;
       }
 
-      // Save credentials if Remember Me is checked
       if (rememberMe) {
         localStorage.setItem('staffsync_saved_id', identifier.trim());
         localStorage.setItem('staffsync_saved_pwd', password.trim());
@@ -76,7 +92,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         localStorage.removeItem('staffsync_saved_pwd');
       }
 
-      // Store user session
       localStorage.setItem('staffsync_current_user', JSON.stringify(data.user));
       onLoginSuccess(data.user);
     } catch (err: any) {
@@ -86,21 +101,13 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     }
   };
 
-  const handleQuickFill = (id: string, pwd: string) => {
-    setIdentifier(id);
-    setPassword(pwd);
-    setErrorMsg('');
-  };
-
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 flex flex-col justify-between p-4 sm:p-6 select-none font-sans">
-      {/* Background Soft Glow */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none">
         <div className="absolute -top-32 -left-32 w-96 h-96 bg-blue-100/60 rounded-full blur-3xl"></div>
         <div className="absolute -bottom-32 -right-32 w-96 h-96 bg-indigo-100/50 rounded-full blur-3xl"></div>
       </div>
 
-      {/* Top Header / Language Switcher */}
       <div className="relative z-10 w-full max-w-sm mx-auto flex items-center justify-between pt-2">
         <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-white border border-slate-200/80 rounded-full text-[11px] font-medium text-slate-600 shadow-xs">
           <MapPin className={`w-3.5 h-3.5 ${gpsStatus === 'granted' ? 'text-emerald-500' : 'text-amber-500'}`} />
@@ -119,10 +126,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         )}
       </div>
 
-      {/* Main Login Card */}
       <div className="relative z-10 w-full max-w-sm mx-auto my-auto bg-white border border-slate-200/90 rounded-3xl p-6 sm:p-7 shadow-xl shadow-slate-200/50">
-        
-        {/* Brand Banner */}
         <div className="flex flex-col items-center text-center mb-6">
           <div className="w-14 h-14 bg-gradient-to-tr from-blue-600 to-indigo-600 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-500/20 mb-3 border border-blue-400/20">
             <Building2 className="w-7 h-7 text-white stroke-[2.2]" />
@@ -143,7 +147,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         )}
 
         <form onSubmit={handleLogin} className="space-y-4">
-          {/* Identifier Field */}
           <div>
             <label className="block text-xs font-medium text-slate-700 mb-1.5">
               {t('employee_id_email')}
@@ -164,7 +167,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             </div>
           </div>
 
-          {/* Password Field */}
           <div>
             <label className="block text-xs font-medium text-slate-700 mb-1.5">
               {t('password')}
@@ -185,7 +187,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             </div>
           </div>
 
-          {/* Remember Me Option */}
           <div className="flex items-center justify-between pt-1">
             <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-600 hover:text-slate-800">
               <input
@@ -200,7 +201,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             <span className="text-[11px] text-slate-400">Saved on Device</span>
           </div>
 
-          {/* Submit Button */}
           <button
             id="login-submit-btn"
             type="submit"
@@ -220,10 +220,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             )}
           </button>
         </form>
-
       </div>
 
-      {/* Footer Branding */}
       <div className="relative z-10 text-center pt-4 pb-2">
         <p className="text-[11px] text-slate-500 font-normal tracking-wide">
           Designed & Developed by <span className="text-slate-700 font-semibold">Abhishek Bhatt</span>
