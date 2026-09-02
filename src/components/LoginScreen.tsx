@@ -29,10 +29,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     if (savedId) setIdentifier(savedId);
     if (savedPwd) setPassword(savedPwd);
 
-    // Ensure persistent device fingerprint exists
+    // Ensure persistent unique hardware fingerprint exists
     let deviceId = localStorage.getItem('staffsync_device_fingerprint');
     if (!deviceId) {
-      deviceId = `dev_${Math.random().toString(36).substring(2, 9)}_${Date.now()}`;
+      deviceId = `dev_\${Math.random().toString(36).substring(2, 9)}_\${Date.now()}`;
       localStorage.setItem('staffsync_device_fingerprint', deviceId);
     }
 
@@ -55,10 +55,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     setLoading(true);
     setErrorMsg('');
 
-    // Send consistent deviceId to backend
+    // Forward consistent deviceId to backend
     let deviceId = localStorage.getItem('staffsync_device_fingerprint');
     if (!deviceId) {
-      deviceId = `dev_${Math.random().toString(36).substring(2, 9)}_${Date.now()}`;
+      deviceId = `dev_\${Math.random().toString(36).substring(2, 9)}_\${Date.now()}`;
       localStorage.setItem('staffsync_device_fingerprint', deviceId);
     }
 
@@ -110,7 +110,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
       <div className="relative z-10 w-full max-w-sm mx-auto flex items-center justify-between pt-2">
         <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-white border border-slate-200/80 rounded-full text-[11px] font-medium text-slate-600 shadow-xs">
-          <MapPin className={`w-3.5 h-3.5 ${gpsStatus === 'granted' ? 'text-emerald-500' : 'text-amber-500'}`} />
+          <MapPin className={`w-3.5 h-3.5 \${gpsStatus === 'granted' ? 'text-emerald-500' : 'text-amber-500'}`} />
           <span>{gpsStatus === 'granted' ? 'GPS Location Ready' : 'Location Required for Attendance'}</span>
         </div>
 
