@@ -47,7 +47,7 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
   const currentMonthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
   const lastDayOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
   const currentMonthEnd = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(lastDayOfMonth).padStart(2, '0')}`;
-  
+
   const [rangeStartDate, setRangeStartDate] = useState<string>(currentMonthStart);
   const [rangeEndDate, setRangeEndDate] = useState<string>(currentMonthEnd);
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>('ALL');
@@ -60,6 +60,14 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
   // Modal States
   const [showManualPunchModal, setShowManualPunchModal] = useState(false);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
+
+  // EDIT & DELETE STATES FOR ATTENDANCE
+  const [editingAttendanceRecord, setEditingAttendanceRecord] = useState<AttendanceRecord | null>(null);
+  const [editCheckIn, setEditCheckIn] = useState('');
+  const [editCheckOut, setEditCheckOut] = useState('');
+  const [editStatus, setEditStatus] = useState('P');
+  const [editNote, setEditNote] = useState('');
+  const [isUpdatingAttendance, setIsUpdatingAttendance] = useState(false);
 
   // Fetch all admin data
   const fetchData = async () => {
@@ -258,6 +266,62 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
     setSelectedStaffUser(null);
   };
 
+  // --- ATTENDANCE EDIT & DELETE HANDLERS ---
+  const handleOpenEditAttendance = (rec: AttendanceRecord) => {
+    setEditingAttendanceRecord(rec);
+    setEditCheckIn(rec.check_in ? rec.check_in.slice(0, 5) : '10:00');
+    setEditCheckOut(rec.check_out ? rec.check_out.slice(0, 5) : '19:00');
+    setEditStatus(rec.status || 'P');
+    setEditNote(rec.late_reason || rec.early_checkout_reason || '');
+  };
+
+  const handleSaveEditAttendance = async () => {
+    if (!editingAttendanceRecord) return;
+    setIsUpdatingAttendance(true);
+    try {
+      const res = await fetch(`/api/attendance/${editingAttendanceRecord.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          check_in: editCheckIn,
+          check_out: editCheckOut,
+          status: editStatus,
+          late_reason: editNote
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        alert('Attendance entry updated successfully!');
+        setEditingAttendanceRecord(null);
+        fetchData();
+        onRefreshData();
+      } else {
+        alert(data.message || 'Failed to update attendance');
+      }
+    } catch (e: any) {
+      alert('Error updating: ' + e.message);
+    } finally {
+      setIsUpdatingAttendance(false);
+    }
+  };
+
+  const handleDeleteAttendance = async (recId: number) => {
+    if (!confirm('Are you sure you want to permanently delete this attendance entry?')) return;
+    try {
+      const res = await fetch(`/api/attendance/${recId}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        alert('Attendance record removed successfully!');
+        fetchData();
+        onRefreshData();
+      } else {
+        alert(data.message || 'Failed to delete record');
+      }
+    } catch (e: any) {
+      alert('Error: ' + e.message);
+    }
+  };
+
   // Request Approval Handlers
   const handleApproveRequest = async (id: number) => {
     const comment = prompt('Enter admin note for approval (Optional):', 'Approved by Admin');
@@ -318,7 +382,7 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 flex flex-col justify-between pb-24 px-3 sm:px-4 pt-3 max-w-5xl mx-auto font-sans transition-colors">
-      
+
       <div>
         {/* Top Header */}
         <div className="flex flex-wrap items-center justify-between gap-3 mb-3.5">
@@ -390,7 +454,7 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
         {/* ===================== TAB 1: DASHBOARD ===================== */}
         {activeTab === 'dashboard' && (
           <div className="space-y-4">
-            
+
             {/* Quick Search */}
             <div className="bg-gradient-to-br from-amber-900/10 via-orange-900/5 to-slate-900/10 dark:from-amber-950/40 dark:via-slate-900 dark:to-slate-900 border border-amber-200/80 dark:border-amber-900/60 rounded-3xl p-3.5 shadow-xs">
               <div className="flex items-center justify-between mb-2">
@@ -603,10 +667,10 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
           </div>
         )}
 
-        {/* ===================== TAB 2: MASTER ATTENDANCE ===================== */}
+        {/* ===================== TAB 2: MASTER ATTENDANCE WITH EDIT & DELETE ===================== */}
         {activeTab === 'attendance' && (
           <div className="space-y-4">
-            
+
             {/* Active Single-User Filter Banner */}
             {activeFilteredEmployee && (
               <div className="bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-800 rounded-2xl p-3 flex items-center justify-between">
@@ -652,7 +716,7 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
 
             {/* Filter Control Box */}
             <div className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-3xl p-4 shadow-xs space-y-3.5">
-              
+
               {/* Site & Employee Dropdowns */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
@@ -719,7 +783,7 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
                     <CalendarRange className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
                     <span>Date Range Filter (Calendar From & To)</span>
                   </span>
-                  
+
                   {(rangeStartDate || rangeEndDate) && (
                     <button
                       onClick={() => handleSetQuickRange('all_time')}
@@ -813,7 +877,7 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
 
             </div>
 
-            {/* Attendance Table */}
+            {/* Attendance Table with LIVE EDIT & DELETE BUTTONS */}
             <div className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-3xl p-4 shadow-xs">
               <div className="flex justify-between items-center mb-3">
                 <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
@@ -823,7 +887,7 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
                   </span>
                 </h3>
               </div>
-              
+
               {attendanceStatusFilter === 'ABSENT' ? (
                 absentStaffList.length === 0 ? (
                   <div className="py-12 text-center text-emerald-600 text-xs bg-emerald-50 dark:bg-emerald-950/30 rounded-2xl border border-emerald-200 dark:border-emerald-800">
@@ -865,7 +929,7 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
                     return (
                       <div
                         key={rec.id}
-                        className="p-3 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-2xl space-y-1.5 text-xs"
+                        className="p-3 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-2xl space-y-1.5 text-xs hover:border-amber-400 transition-colors"
                       >
                         <div className="flex items-center justify-between">
                           <div>
@@ -891,20 +955,37 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
                             </p>
                           </div>
 
-                          <div>
+                          <div className="flex items-center gap-2">
                             <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold border ${
                               rec.status === 'P' && !isLateRec ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
                               isLateRec ? 'bg-amber-50 text-amber-700 border-amber-200' :
                               'bg-blue-50 text-blue-700 border-blue-200'
                             }`}>
-                              {rec.status === 'P' && !isLateRec ? 'Present (On-Time)' : isLateRec ? 'Late' : rec.status}
+                              {rec.status === 'P' && !isLateRec ? 'Present' : isLateRec ? 'Late' : rec.status}
                             </span>
+
+                            {/* ADMIN ACTION BUTTONS: EDIT & DELETE */}
+                            <button
+                              onClick={() => handleOpenEditAttendance(rec)}
+                              className="p-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-amber-600 hover:bg-amber-50 rounded-lg transition-colors cursor-pointer"
+                              title="Edit Timings & Status"
+                            >
+                              <Edit className="w-3.5 h-3.5" />
+                            </button>
+
+                            <button
+                              onClick={() => handleDeleteAttendance(rec.id)}
+                              className="p-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                              title="Delete Record"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
                           </div>
                         </div>
 
                         {rec.late_reason && (
                           <p className="text-[10px] bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 p-1.5 rounded-lg border border-amber-200/60 dark:border-amber-900/40">
-                            <strong>Late Reason:</strong> {rec.late_reason}
+                            <strong>Note:</strong> {rec.late_reason}
                           </p>
                         )}
                         {rec.early_checkout_reason && (
@@ -925,7 +1006,7 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
         {/* ===================== TAB 3: REQUESTS & APPROVALS ===================== */}
         {activeTab === 'requests' && (
           <div className="space-y-4">
-            
+
             {/* Filter Tabs */}
             <div className="flex bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 p-1 rounded-2xl shadow-xs gap-1">
               {[
@@ -1116,11 +1197,100 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
 
       </div>
 
+      {/* ================= MODAL: EDIT ATTENDANCE ENTRY ================= */}
+      {editingAttendanceRecord && (
+        <div className="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-5 max-w-sm w-full shadow-2xl space-y-3.5 text-xs">
+            <div className="flex justify-between items-center pb-2 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center font-bold">
+                  <Edit className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="font-bold text-sm text-slate-900 dark:text-white">Edit Attendance Entry</h4>
+                  <p className="text-[10px] text-slate-400">{editingAttendanceRecord.user_name} • {editingAttendanceRecord.date}</p>
+                </div>
+              </div>
+              <button onClick={() => setEditingAttendanceRecord(null)} className="p-1 text-slate-400 hover:text-slate-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-2.5">
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-0.5">Check-In Time:</label>
+                  <input
+                    type="time"
+                    value={editCheckIn}
+                    onChange={(e) => setEditCheckIn(e.target.value)}
+                    className="w-full p-2 bg-slate-50 dark:bg-slate-800 border rounded-xl font-mono text-xs font-bold text-slate-900 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-0.5">Check-Out Time:</label>
+                  <input
+                    type="time"
+                    value={editCheckOut}
+                    onChange={(e) => setEditCheckOut(e.target.value)}
+                    className="w-full p-2 bg-slate-50 dark:bg-slate-800 border rounded-xl font-mono text-xs font-bold text-slate-900 dark:text-white"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-0.5">Status:</label>
+                <select
+                  value={editStatus}
+                  onChange={(e) => setEditStatus(e.target.value)}
+                  className="w-full p-2 bg-slate-50 dark:bg-slate-800 border rounded-xl text-xs font-bold text-slate-900 dark:text-white"
+                >
+                  <option value="P">Present (On-Time)</option>
+                  <option value="L">Late</option>
+                  <option value="Leave">Leave</option>
+                  <option value="Half Day">Half Day</option>
+                  <option value="Weekly Off">Weekly Off</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-0.5">Admin Note / Remark:</label>
+                <input
+                  type="text"
+                  value={editNote}
+                  onChange={(e) => setEditNote(e.target.value)}
+                  placeholder="e.g. Corrected manual punch error"
+                  className="w-full p-2 bg-slate-50 dark:bg-slate-800 border rounded-xl text-xs text-slate-900 dark:text-white"
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setEditingAttendanceRecord(null)}
+                className="w-1/2 py-2 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-xl font-semibold text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isUpdatingAttendance}
+                onClick={handleSaveEditAttendance}
+                className="w-1/2 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-bold text-xs shadow-md"
+              >
+                {isUpdatingAttendance ? 'Saving...' : 'Save Changes'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Drill-down Modal for Employee Details */}
       {selectedStaffUser && (
         <div className="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-5 max-w-md w-full max-h-[88vh] flex flex-col shadow-2xl">
-            
+
             <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
               <div className="flex items-center gap-3">
                 <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-amber-600 to-orange-600 text-white flex items-center justify-center font-bold text-base shadow-xs">
