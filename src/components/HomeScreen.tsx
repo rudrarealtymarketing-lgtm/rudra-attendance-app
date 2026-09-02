@@ -176,25 +176,14 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     }
   }, [currentUser.id]);
 
-  // Strict GPS and Geofence Helper with Built-in Fallback Coordinates
+  // Dynamic Site Geofence Engine (Matches exact Ulwe, Neelkanth, Kharghar sites + Buffer)
   const getVerifiedLiveLocation = async (): Promise<{ lat: number; lng: number; accuracy: number; distance: number; siteName: string } | null> => {
     if (!navigator.geolocation) {
       alert("❌ Browser Geolocation Error:\n\nYour browser or device does not support GPS location. Please open in Chrome or Safari.");
       return null;
     }
 
-    // Default Site Master Fallback (ARAMUS RUDRA)
-    const DEFAULT_FALLBACK_SITE: Site = {
-      id: 1,
-      name: 'ARAMUS RUDRA',
-      address: 'Plot 4 and 4a, Sector 18 Rd, Sector 18, Kharghar, Panvel, Maharashtra 410210',
-      latitude: 19.04574,
-      longitude: 73.08025,
-      radius: 20
-    };
-
     try {
-      // Triggers Android's Google Location Accuracy dialog
       const position: GeolocationPosition = await new Promise((resolve, reject) => {
         navigator.geolocation.getCurrentPosition(resolve, reject, {
           enableHighAccuracy: true,
@@ -205,30 +194,52 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
       const userLat = position.coords.latitude;
       const userLng = position.coords.longitude;
-      const accuracy = position.coords.accuracy;
+      const accuracy = position.coords.accuracy || 0;
 
       setGpsLocation({ latitude: userLat, longitude: userLng });
 
-      // Find Assigned Site or use Default Fallback
-      let assignedSite = sites.find(s => 
-        s.name?.trim().toLowerCase() === currentUser.site_name?.trim().toLowerCase()
-      );
+      // Clean Case & Space Matching
+      const userSiteClean = (currentUser.site_name || "").toLowerCase().replace(/[^a-z0-9]/g, '');
+      
+      let assignedSite = sites.find(s => {
+        const sClean = (s.name || "").toLowerCase().replace(/[^a-z0-9]/g, '');
+        return sClean === userSiteClean || sClean.includes(userSiteClean) || userSiteClean.includes(sClean);
+      });
 
-      if (!assignedSite || !assignedSite.latitude || !assignedSite.longitude) {
-        assignedSite = sites[0] || DEFAULT_FALLBACK_SITE;
+      // If still missing, check partial keywords (e.g. 'ulwe', 'neelkanth', 'aramus')
+      if (!assignedSite && currentUser.site_name) {
+        const userWords = currentUser.site_name.toLowerCase().split(/[\s-]+/).filter(w => w.length > 3);
+        assignedSite = sites.find(s => {
+          const sNameLower = s.name.toLowerCase();
+          return userWords.some(w => sNameLower.includes(w));
+        });
       }
 
-      const siteLat = Number(assignedSite.latitude) || DEFAULT_FALLBACK_SITE.latitude;
-      const siteLng = Number(assignedSite.longitude) || DEFAULT_FALLBACK_SITE.longitude;
-      const allowedRadius = Number(assignedSite.radius) > 0 ? Number(assignedSite.radius) : 20;
+      if (!assignedSite && sites.length > 0) {
+        assignedSite = sites[0];
+      }
+
+      if (!assignedSite || !assignedSite.latitude || !assignedSite.longitude) {
+        alert("❌ Site Configuration Error:\n\nAssigned site GPS coordinates are missing. Please contact Admin.");
+        return null;
+      }
+
+      const siteLat = Number(assignedSite.latitude);
+      const siteLng = Number(assignedSite.longitude);
+
+      // Practical allowed radius: Uses configured radius (e.g. 150m) with 50m minimum buffer
+      const baseRadius = Number(assignedSite.radius) > 0 ? Number(assignedSite.radius) : 100;
+      const allowedRadius = Math.max(baseRadius, 50);
 
       const distance = calculateDistanceMeters(userLat, userLng, siteLat, siteLng);
 
-      // Boundary Enforcement (Block if outside radius)
-      if (distance > allowedRadius) {
+      // Compensate for mobile GPS inaccuracy
+      const effectiveDistance = Math.max(0, distance - (accuracy > 20 ? 15 : 0));
+
+      if (effectiveDistance > allowedRadius) {
         const distRounded = Math.round(distance);
         alert(
-          `❌ Punch Rejected!\n\nYou are ${distRounded}m away from your assigned site (${assignedSite.name}).\n\nPlease move within the ${allowedRadius}m site boundary to punch attendance.`
+          `❌ Punch Rejected!\n\nYou are ${distRounded}m away from your assigned site (${assignedSite.name}).\n\nPlease move within the site boundary (${allowedRadius}m) to punch attendance.`
         );
         return null;
       }
@@ -242,11 +253,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       };
     } catch (err: any) {
       if (err.code === 1) { // PERMISSION_DENIED
-        alert("❌ Location Permission Required!\n\nPlease turn on your device GPS location and allow location access in your browser to record attendance.");
+        alert("❌ Location Permission Required!\n\nPlease turn on device GPS location and allow location access in your browser to record attendance.");
       } else if (err.code === 2) { // POSITION_UNAVAILABLE
-        alert("❌ GPS Signal Not Available!\n\nPlease ensure Google Location Accuracy is enabled on your phone.");
+        alert("❌ GPS Signal Not Available!\n\nPlease ensure Google Location Accuracy is enabled on your device.");
       } else if (err.code === 3) { // TIMEOUT
-        alert("❌ GPS Request Timed Out!\n\nUnable to retrieve accurate GPS location in time. Please try again in an open area.");
+        alert("❌ GPS Request Timed Out!\n\nUnable to retrieve accurate GPS location. Please try again in an open area.");
       } else {
         alert("❌ Location Error: " + err.message);
       }
@@ -297,7 +308,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     }
   };
 
-  // Perform Check-In with Compulsory Live Geofence Check
+  // Perform Check-In
   const performCheckIn = async (reason: string) => {
     if (loading) return;
     setLoading(true);
@@ -384,7 +395,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     }
   };
 
-  // Perform Check-Out with Compulsory Live Geofence Check
+  // Perform Check-Out
   const performCheckOut = async (reason: string) => {
     if (loading) return;
     setLoading(true);
