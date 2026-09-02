@@ -507,17 +507,19 @@ async function autoSyncFromGoogleSheetsOnBoot() {
             const attDate = String(rawDate).includes("T") ? rawDate.split("T")[0] : rawDate;
             const existing = db.prepare("SELECT id FROM attendance WHERE user_id = ? AND date = ?").get(user.id, attDate);
             if (!existing) {
-              db.prepare(`
-                INSERT INTO attendance (user_id, date, check_in, check_out, status, method, location, late_minutes, overtime_hours)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-              `).run(
-                user.id, attDate,
-                cleanTimeString(a.check_in || a['Check In']),
-                cleanTimeString(a.check_out || a['Check Out']),
-                a.status === 'Present' ? 'P' : (a.status === 'Late' ? 'L' : (a.status || 'P')),
-                a.method || 'app', a.site_name || a.branch___site || 'ARAMUS RUDRA',
-                Number(a.late_minutes || a.late__min_) || 0, Number(a.overtime_hours || a.overtime__hrs_) || 0
-              );
+              try {
+                db.prepare(`
+                  INSERT INTO attendance (user_id, date, check_in, check_out, status, method, location, late_minutes, overtime_hours)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                `).run(
+                  user.id, attDate,
+                  cleanTimeString(a.check_in || a['Check In']),
+                  cleanTimeString(a.check_out || a['Check Out']),
+                  a.status === 'Present' ? 'P' : (a.status === 'Late' ? 'L' : (a.status || 'P')),
+                  a.method || 'app', a.site_name || a.branch___site || 'ARAMUS RUDRA',
+                  Number(a.late_minutes || a.late__min_) || 0, Number(a.overtime_hours || a.overtime__hrs_) || 0
+                );
+              } catch (_) {}
             }
           }
         }
@@ -678,7 +680,7 @@ async function startServer() {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
   });
 
-// Login Handler with Automatic Hardware Fingerprint & Strict Device Locking
+  // Login Handler with Automatic Hardware Fingerprint & Strict Device Locking
   app.post("/api/login", (req, res) => {
     const { identifier, username, password, deviceId } = req.body;
     const searchVal = String(identifier || username || "").trim();
@@ -714,7 +716,6 @@ async function startServer() {
 
     // Strict Device Binding Enforcement for Non-Admin Staff
     if (user.role !== 'super_admin' && user.role !== 'director' && allowedDevices === 1) {
-      // If already bound to another device
       if (user.bound_device_id && user.bound_device_id !== effectiveDeviceId) {
         return res.status(403).json({
           success: false,
@@ -722,7 +723,6 @@ async function startServer() {
         });
       }
 
-      // First time login: Lock to this device immediately!
       if (!user.bound_device_id) {
         db.prepare("UPDATE users SET bound_device_id = ?, last_device_info = ? WHERE id = ?").run(effectiveDeviceId, incomingHeaderDevice, user.id);
         user.bound_device_id = effectiveDeviceId;
@@ -735,18 +735,35 @@ async function startServer() {
     res.json({ success: true, user });
   });
 
-  // Device Reset API (Admin 1-Click Unlock)
-  app.post(["/api/users/:id/reset-device", "/api/super_admin/users/:id/reset-device"], (req, res) => {
-    const { id } = req.params;
+  // =========================================================================
+  // 1. UNIVERSAL DEVICE RESET API (Solves Photo 2 <!DOCTYPE JSON Error)
+  // Handles POST, PUT, GET, DELETE across all possible URL patterns
+  // =========================================================================
+  const handleUniversalDeviceReset = (req: express.Request, res: express.Response) => {
+    const targetId = req.params.id || req.body.userId || req.body.id || req.query.userId || req.query.id;
+    if (!targetId) {
+      return res.status(400).json({ success: false, message: "User ID is required to reset device binding." });
+    }
+
     try {
-      db.prepare("UPDATE users SET bound_device_id = NULL WHERE id = ?").run(id);
+      db.prepare("UPDATE users SET bound_device_id = NULL, last_device_info = NULL WHERE id = ?").run(targetId);
       backupDatabaseToJson();
       triggerLiveSync('reset_device');
-      res.json({ success: true, message: "Device lock cleared successfully. User can now register a new device." });
+      console.log(`>>> Device lock cleared successfully for User ID: ${targetId}`);
+      return res.json({ success: true, message: "Device lock cleared successfully. Staff can now bind a new device." });
     } catch (e: any) {
-      res.status(500).json({ success: false, message: e.message });
+      return res.status(500).json({ success: false, message: e.message });
     }
-  });
+  };
+
+  app.all([
+    "/api/users/:id/reset-device",
+    "/api/super_admin/users/:id/reset-device",
+    "/api/users/reset-device",
+    "/api/users/reset-device/:id",
+    "/api/users/:id/unbind",
+    "/api/super_admin/users/:id/unbind"
+  ], handleUniversalDeviceReset);
 
   // Universal Password Change Handler
   const handleUniversalPasswordChange = (req: express.Request, res: express.Response) => {
@@ -964,11 +981,11 @@ async function startServer() {
       });
     }
 
-   const userRow = db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as any;
+    const userRow = db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as any;
     
     // Strict Hardware Lock on Check-In
-    const effectiveDevId = String(deviceId || req.headers['user-agent'] || "").slice(0, 100);
-    if (userRow && (Number(userRow.allowed_devices) || 1) === 1 && userRow.role !== 'super_admin') {
+    const effectiveDevId = String(deviceId || req.headers['x-device-id'] || req.headers['user-agent'] || "").slice(0, 100);
+    if (userRow && (Number(userRow.allowed_devices) || 1) === 1 && userRow.role !== 'super_admin' && userRow.role !== 'director') {
       if (userRow.bound_device_id && effectiveDevId && userRow.bound_device_id !== effectiveDevId) {
         return res.status(403).json({ 
           success: false, 
@@ -978,6 +995,7 @@ async function startServer() {
         db.prepare("UPDATE users SET bound_device_id = ? WHERE id = ?").run(effectiveDevId, userId);
       }
     }
+
     const existing = db.prepare("SELECT * FROM attendance WHERE user_id = ? AND date = ?").get(userId, date);
     if (existing) {
       return res.status(400).json({ success: false, message: "Already checked in for today" });
@@ -1440,7 +1458,9 @@ async function startServer() {
     res.json({ success: true, message: "Geofence settings updated." });
   });
 
-// Requests / Approvals Workflow (Supports both singular & plural endpoints)
+  // =========================================================================
+  // Requests / Approvals Workflow (Universal Multi-Endpoints)
+  // =========================================================================
   app.all([
     "/api/attendance/request",
     "/api/attendance/requests",
@@ -1490,6 +1510,71 @@ async function startServer() {
     return next();
   });
 
+  // User-Specific Request History
+  app.get("/api/attendance/requests/user/:userId", (req, res) => {
+    const { userId } = req.params;
+    try {
+      const requests = db.prepare(`
+        SELECT r.*, u.name as user_name, u.registration_id, u.site_name as user_site_name, u.designation
+        FROM attendance_requests r
+        JOIN users u ON r.user_id = u.id
+        WHERE r.user_id = ?
+        ORDER BY r.created_at DESC
+      `).all(userId);
+      res.json(requests);
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  // User Can Delete / Cancel Pending Request
+  app.delete(["/api/attendance/requests/:id", "/api/attendance/request/:id"], (req, res) => {
+    const { id } = req.params;
+    try {
+      const existing = db.prepare("SELECT * FROM attendance_requests WHERE id = ?").get(id) as any;
+      if (!existing) return res.status(404).json({ success: false, message: "Request not found." });
+
+      db.prepare("DELETE FROM attendance_requests WHERE id = ?").run(id);
+      backupDatabaseToJson();
+      triggerLiveSync('delete_request');
+      res.json({ success: true, message: "Request cancelled / deleted successfully." });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  // User Can Update / Edit Pending Request
+  app.put(["/api/attendance/requests/:id", "/api/attendance/request/:id"], (req, res) => {
+    const { id } = req.params;
+    const { date, startDate, endDate, checkIn, checkOut, reason, type, halfDaySlot } = req.body;
+    try {
+      const targetDate = date || startDate;
+      db.prepare(`
+        UPDATE attendance_requests
+        SET date = COALESCE(?, date),
+            start_date = COALESCE(?, start_date),
+            end_date = COALESCE(?, end_date),
+            check_in = COALESCE(?, check_in),
+            check_out = COALESCE(?, check_out),
+            reason = COALESCE(?, reason),
+            type = COALESCE(?, type),
+            half_day_slot = COALESCE(?, half_day_slot)
+        WHERE id = ? AND status = 'PENDING'
+      `).run(
+        targetDate || null, startDate || targetDate || null, endDate || targetDate || null,
+        cleanTimeString(checkIn) || null, cleanTimeString(checkOut) || null,
+        reason || null, type || null, halfDaySlot || null, id
+      );
+
+      backupDatabaseToJson();
+      triggerLiveSync('update_request');
+      res.json({ success: true, message: "Request updated successfully." });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  // Approve Request with Notification
   app.post("/api/attendance/requests/:id/approve", (req, res) => {
     const { id } = req.params;
     const { adminComment, actionedBy } = req.body;
@@ -1503,11 +1588,70 @@ async function startServer() {
         WHERE id = ?
       `).run(adminComment || 'Approved', actionedBy || 'Admin', id);
 
+      const notifMsg = `Your ${request.type} request for ${request.date || request.start_date} was APPROVED.`;
+      db.prepare(`
+        INSERT INTO notifications (user_id, title, message, type, is_read)
+        VALUES (?, 'Request Approved ✅', ?, 'success', 0)
+      `).run(request.user_id, notifMsg);
+
       backupDatabaseToJson();
       triggerLiveSync('approve_request');
-      res.json({ success: true, message: "Request approved." });
+      res.json({ success: true, message: "Request approved and user notified." });
     } catch (err: any) {
       res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  // Reject Request with Notification
+  app.post("/api/attendance/requests/:id/reject", (req, res) => {
+    const { id } = req.params;
+    const { adminComment, actionedBy } = req.body;
+    try {
+      const request = db.prepare("SELECT * FROM attendance_requests WHERE id = ?").get(id) as any;
+      if (!request) return res.status(404).json({ success: false, message: "Request not found." });
+
+      db.prepare(`
+        UPDATE attendance_requests 
+        SET status = 'REJECTED', admin_comment = ?, actioned_at = CURRENT_TIMESTAMP, actioned_by = ?
+        WHERE id = ?
+      `).run(adminComment || 'Rejected by management', actionedBy || 'Admin', id);
+
+      const notifMsg = `Your ${request.type} request for ${request.date || request.start_date} was REJECTED: "${adminComment || 'No comment'}"`;
+      db.prepare(`
+        INSERT INTO notifications (user_id, title, message, type, is_read)
+        VALUES (?, 'Request Rejected ❌', ?, 'warning', 0)
+      `).run(request.user_id, notifMsg);
+
+      backupDatabaseToJson();
+      triggerLiveSync('reject_request');
+      res.json({ success: true, message: "Request rejected and user notified." });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  // Notifications API
+  app.get("/api/notifications", (req, res) => {
+    const { userId } = req.query;
+    try {
+      const list = db.prepare(`
+        SELECT * FROM notifications 
+        WHERE user_id = ? OR user_id IS NULL 
+        ORDER BY created_at DESC LIMIT 30
+      `).all(userId || null);
+      res.json(list);
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  app.post("/api/notifications/mark-read", (req, res) => {
+    const { userId } = req.body;
+    try {
+      db.prepare("UPDATE notifications SET is_read = 1 WHERE user_id = ? OR user_id IS NULL").run(userId || null);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
     }
   });
 
