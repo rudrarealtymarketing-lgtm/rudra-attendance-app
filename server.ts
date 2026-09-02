@@ -294,21 +294,24 @@ if (!existingDirector) {
   db.prepare("INSERT INTO users (registration_id, name, email, role, department_id, password, designation, site_name, allowed_devices) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run("DIR-01", "Director / Partner", "director@rudra.com", "director", 1, "director123", "Managing Director (MD)", "ARAMUS RUDRA", 99);
 }
 
-// Ensure default site exists
+// Ensure All Official Sites Exist in SQLite by Default
 const siteCountCheck = db.prepare("SELECT COUNT(*) as count FROM sites").get() as any;
-if (siteCountCheck.count === 0) {
-  db.prepare(`
+if (siteCountCheck.count <= 1) {
+  const defaultSites = [
+    { name: "ARAMUS RUDRA", address: "Plot 4 and 4a, Sector 18 Rd, Sector 18, Kharghar, Panvel", lat: 19.04569196, lng: 73.08015347, rad: 150 },
+    { name: "Rudra Velocity", address: "Gut no: 05, Dharna Village, near Toll Plaza", lat: 19.09544085, lng: 73.07401173, rad: 150 },
+    { name: "Neelkanth Rudra Sec - 19", address: "Sector - 19, Ulwe, Navi Mumbai", lat: 18.97047554, lng: 73.03174764, rad: 150 },
+    { name: "Rudra Group Office Ulwe Sec - 17", address: "Sector - 17, Ulwe, Navi Mumbai", lat: 18.96271612, lng: 73.01963478, rad: 150 }
+  ];
+
+  const insSite = db.prepare(`
     INSERT INTO sites (name, address, latitude, longitude, radius, work_start_time, work_end_time)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    "ARAMUS RUDRA",
-    "Plot 4 and 4a, Sector 18 Rd, Sector 18, Kharghar, Panvel, Maharashtra 410210",
-    19.04574,
-    73.08025,
-    150,
-    "10:00",
-    "19:00"
-  );
+    VALUES (?, ?, ?, ?, ?, '10:00', '19:00')
+    ON CONFLICT(name) DO UPDATE SET latitude = excluded.latitude, longitude = excluded.longitude, radius = excluded.radius
+  `);
+  for (const s of defaultSites) {
+    insSite.run(s.name, s.address, s.lat, s.lng, s.rad);
+  }
 }
 
 // Ensure default sheet_settings row exists with the permanent Web App URL
@@ -675,14 +678,14 @@ async function startServer() {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
   });
 
-  // Login Handler with Strict Hardware Device Access Limit
+// Login Handler with Automatic Hardware Fingerprint & Strict Device Locking
   app.post("/api/login", (req, res) => {
     const { identifier, username, password, deviceId } = req.body;
     const searchVal = String(identifier || username || "").trim();
     const pwd = String(password || "").trim();
 
     if (!searchVal || !pwd) {
-      return res.status(400).json({ success: false, message: "Please enter your credentials" });
+      return res.status(400).json({ success: false, message: "Please enter your credentials." });
     }
 
     const user = db.prepare(`
@@ -702,20 +705,30 @@ async function startServer() {
       return res.status(401).json({ success: false, message: "Incorrect password." });
     }
 
-    // 🔒 Hardware Device Locking Enforcement
+    // 🔒 Generate Hardware Fingerprint even if frontend doesn't pass deviceId
+    const incomingHeaderDevice = (req.headers['x-device-id'] as string) || (req.headers['user-agent'] || "").slice(0, 100);
+    const clientIp = ((req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || "").split(',')[0].trim();
+    const effectiveDeviceId = String(deviceId || incomingHeaderDevice || clientIp || "DEVICE_UNKNOWN").trim();
+
     const allowedDevices = Number(user.allowed_devices) || 1;
-    if (user.role !== 'super_admin' && allowedDevices === 1 && deviceId) {
-      if (user.bound_device_id && user.bound_device_id !== deviceId) {
+
+    // Strict Device Binding Enforcement for Non-Admin Staff
+    if (user.role !== 'super_admin' && user.role !== 'director' && allowedDevices === 1) {
+      // If already bound to another device
+      if (user.bound_device_id && user.bound_device_id !== effectiveDeviceId) {
         return res.status(403).json({
           success: false,
-          message: "Security Violation: Account bound to another device. Contact Admin to reset your device."
+          message: "🔒 Security Violation: This account is locked to another mobile device. Please contact Admin to reset device access."
         });
       }
 
+      // First time login: Lock to this device immediately!
       if (!user.bound_device_id) {
-        db.prepare("UPDATE users SET bound_device_id = ? WHERE id = ?").run(deviceId, user.id);
-        user.bound_device_id = deviceId;
+        db.prepare("UPDATE users SET bound_device_id = ?, last_device_info = ? WHERE id = ?").run(effectiveDeviceId, incomingHeaderDevice, user.id);
+        user.bound_device_id = effectiveDeviceId;
         backupDatabaseToJson();
+        triggerLiveSync('device_bound');
+        console.log(`>>> Device locked for staff: ${user.name} (ID: ${effectiveDeviceId})`);
       }
     }
 
@@ -951,15 +964,20 @@ async function startServer() {
       });
     }
 
-    const userRow = db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as any;
-    if (userRow && (Number(userRow.allowed_devices) || 1) === 1 && deviceId) {
-      if (userRow.bound_device_id && userRow.bound_device_id !== deviceId) {
-        return res.status(403).json({ success: false, message: "Security Violation: Account bound to another device." });
-      } else if (!userRow.bound_device_id) {
-        db.prepare("UPDATE users SET bound_device_id = ? WHERE id = ?").run(deviceId, userId);
+   const userRow = db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as any;
+    
+    // Strict Hardware Lock on Check-In
+    const effectiveDevId = String(deviceId || req.headers['user-agent'] || "").slice(0, 100);
+    if (userRow && (Number(userRow.allowed_devices) || 1) === 1 && userRow.role !== 'super_admin') {
+      if (userRow.bound_device_id && effectiveDevId && userRow.bound_device_id !== effectiveDevId) {
+        return res.status(403).json({ 
+          success: false, 
+          message: "Security Violation: Account bound to another device. Cannot punch attendance." 
+        });
+      } else if (!userRow.bound_device_id && effectiveDevId) {
+        db.prepare("UPDATE users SET bound_device_id = ? WHERE id = ?").run(effectiveDevId, userId);
       }
     }
-
     const existing = db.prepare("SELECT * FROM attendance WHERE user_id = ? AND date = ?").get(userId, date);
     if (existing) {
       return res.status(400).json({ success: false, message: "Already checked in for today" });
@@ -1422,35 +1440,54 @@ async function startServer() {
     res.json({ success: true, message: "Geofence settings updated." });
   });
 
-  // Requests / Approvals Workflow
-  app.get("/api/attendance/requests", (req, res) => {
-    const requests = db.prepare(`
-      SELECT r.*, u.name as user_name, u.registration_id, u.site_name as user_site_name, u.designation
-      FROM attendance_requests r
-      JOIN users u ON r.user_id = u.id
-      ORDER BY r.created_at DESC
-    `).all();
-    res.json(requests);
-  });
-
-  app.post("/api/attendance/request", (req, res) => {
-    const { userId, date, startDate, endDate, checkIn, checkOut, reason, siteName, type, halfDaySlot } = req.body;
-    try {
-      const user = db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as any;
-      if (!user) return res.status(404).json({ success: false, message: "User not found" });
-
-      const targetDate = date || startDate || new Date().toISOString().split('T')[0];
-      const result = db.prepare(`
-        INSERT INTO attendance_requests (user_id, date, start_date, end_date, check_in, check_out, reason, site_name, type, half_day_slot, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')
-      `).run(userId, targetDate, startDate || targetDate, endDate || targetDate, cleanTimeString(checkIn) || null, cleanTimeString(checkOut) || null, reason || null, siteName || user.site_name || null, type || 'CORRECTION', halfDaySlot || null);
-
-      backupDatabaseToJson();
-      triggerLiveSync('requests');
-      res.json({ success: true, id: result.lastInsertRowid });
-    } catch (err: any) {
-      res.status(500).json({ success: false, message: err.message });
+// Requests / Approvals Workflow (Supports both singular & plural endpoints)
+  app.all([
+    "/api/attendance/request",
+    "/api/attendance/requests",
+    "/api/attendance/leave-request",
+    "/api/requests"
+  ], (req, res, next) => {
+    if (req.method === 'GET') {
+      const requests = db.prepare(`
+        SELECT r.*, u.name as user_name, u.registration_id, u.site_name as user_site_name, u.designation
+        FROM attendance_requests r
+        JOIN users u ON r.user_id = u.id
+        ORDER BY r.created_at DESC
+      `).all();
+      return res.json(requests);
     }
+
+    if (req.method === 'POST') {
+      const { userId, date, startDate, endDate, checkIn, checkOut, reason, siteName, type, halfDaySlot } = req.body;
+      try {
+        const user = db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as any;
+        if (!user) return res.status(404).json({ success: false, message: "User not found" });
+
+        const targetDate = date || startDate || new Date().toISOString().split('T')[0];
+        const result = db.prepare(`
+          INSERT INTO attendance_requests (user_id, date, start_date, end_date, check_in, check_out, reason, site_name, type, half_day_slot, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')
+        `).run(
+          userId, 
+          targetDate, 
+          startDate || targetDate, 
+          endDate || targetDate, 
+          cleanTimeString(checkIn) || null, 
+          cleanTimeString(checkOut) || null, 
+          reason || null, 
+          siteName || user.site_name || null, 
+          type || 'CORRECTION', 
+          halfDaySlot || null
+        );
+
+        backupDatabaseToJson();
+        triggerLiveSync('requests');
+        return res.json({ success: true, id: result.lastInsertRowid, message: "Request submitted successfully!" });
+      } catch (err: any) {
+        return res.status(500).json({ success: false, message: err.message });
+      }
+    }
+    return next();
   });
 
   app.post("/api/attendance/requests/:id/approve", (req, res) => {
