@@ -176,7 +176,15 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     }
   }, [currentUser.id]);
 
-  // Dynamic Site Geofence Engine (Matches exact Ulwe, Neelkanth, Kharghar sites + Buffer)
+  // Master fallback coordinates directly in frontend
+  const MASTER_SITES_FALLBACK: Site[] = [
+    { id: 1, name: "ARAMUS RUDRA", address: "Plot 4 and 4a, Sector 18 Rd, Sector 18, Kharghar, Panvel", latitude: 19.04569196, longitude: 73.08015347, radius: 150 },
+    { id: 2, name: "Rudra Velocity", address: "Gut no: 05, Dharna Village, near Toll Plaza", latitude: 19.09544085, longitude: 73.07401173, radius: 150 },
+    { id: 3, name: "Neelkanth Rudra Sec - 19", address: "Sector - 19, Ulwe, Navi Mumbai", latitude: 18.97047554, longitude: 73.03174764, radius: 150 },
+    { id: 4, name: "Rudra Group Office Ulwe Sec - 17", address: "Sector - 17, Ulwe, Navi Mumbai", latitude: 18.96271612, longitude: 73.01963478, radius: 150 }
+  ];
+
+  // Dynamic Site Geofence Engine with Master Fallback Coordinates
   const getVerifiedLiveLocation = async (): Promise<{ lat: number; lng: number; accuracy: number; distance: number; siteName: string } | null> => {
     if (!navigator.geolocation) {
       alert("❌ Browser Geolocation Error:\n\nYour browser or device does not support GPS location. Please open in Chrome or Safari.");
@@ -198,25 +206,25 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
       setGpsLocation({ latitude: userLat, longitude: userLng });
 
-      // Clean Case & Space Matching
-      const userSiteClean = (currentUser.site_name || "").toLowerCase().replace(/[^a-z0-9]/g, '');
-      
-      let assignedSite = sites.find(s => {
-        const sClean = (s.name || "").toLowerCase().replace(/[^a-z0-9]/g, '');
-        return sClean === userSiteClean || sClean.includes(userSiteClean) || userSiteClean.includes(sClean);
+      // Merge API sites with fallback master list
+      const allAvailableSites = [...MASTER_SITES_FALLBACK, ...sites];
+
+      // Normalized target site string
+      const cleanTarget = (currentUser.site_name || "").toLowerCase().replace(/[^a-z0-9]/g, '');
+
+      // 1. Direct Normalized Match
+      let assignedSite = allAvailableSites.find(s => {
+        const cleanName = (s.name || "").toLowerCase().replace(/[^a-z0-9]/g, '');
+        return cleanName === cleanTarget || cleanName.includes(cleanTarget) || cleanTarget.includes(cleanName);
       });
 
-      // If still missing, check partial keywords (e.g. 'ulwe', 'neelkanth', 'aramus')
+      // 2. Keyword Match Fallback
       if (!assignedSite && currentUser.site_name) {
-        const userWords = currentUser.site_name.toLowerCase().split(/[\s-]+/).filter(w => w.length > 3);
-        assignedSite = sites.find(s => {
-          const sNameLower = s.name.toLowerCase();
-          return userWords.some(w => sNameLower.includes(w));
-        });
-      }
-
-      if (!assignedSite && sites.length > 0) {
-        assignedSite = sites[0];
+        const kw = currentUser.site_name.toLowerCase();
+        if (kw.includes("velocity")) assignedSite = MASTER_SITES_FALLBACK[1];
+        else if (kw.includes("19") || kw.includes("neelkanth")) assignedSite = MASTER_SITES_FALLBACK[2];
+        else if (kw.includes("ulwe") || kw.includes("17")) assignedSite = MASTER_SITES_FALLBACK[3];
+        else assignedSite = MASTER_SITES_FALLBACK[0];
       }
 
       if (!assignedSite || !assignedSite.latitude || !assignedSite.longitude) {
@@ -227,13 +235,13 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
       const siteLat = Number(assignedSite.latitude);
       const siteLng = Number(assignedSite.longitude);
 
-      // Practical allowed radius: Uses configured radius (e.g. 150m) with 50m minimum buffer
-      const baseRadius = Number(assignedSite.radius) > 0 ? Number(assignedSite.radius) : 100;
+      // 150m practical site radius for construction buildings
+      const baseRadius = Number(assignedSite.radius) > 0 ? Number(assignedSite.radius) : 150;
       const allowedRadius = Math.max(baseRadius, 50);
 
       const distance = calculateDistanceMeters(userLat, userLng, siteLat, siteLng);
 
-      // Compensate for mobile GPS inaccuracy
+      // Compensate for mobile GPS drift
       const effectiveDistance = Math.max(0, distance - (accuracy > 20 ? 15 : 0));
 
       if (effectiveDistance > allowedRadius) {
