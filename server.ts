@@ -182,7 +182,7 @@ db.exec(`
     name TEXT UNIQUE NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
-`);
+\`);
 
 // Migrations
 const userTableInfo = db.prepare("PRAGMA table_info(users)").all() as any[];
@@ -242,15 +242,31 @@ const settingsTableInfo = db.prepare("PRAGMA table_info(sheet_settings)").all() 
 if (!settingsTableInfo.some(col => col.name === 'web_app_url')) runMigration("add web_app_url", "ALTER TABLE sheet_settings ADD COLUMN web_app_url TEXT");
 if (!settingsTableInfo.some(col => col.name === 'is_locked')) runMigration("add is_locked", "ALTER TABLE sheet_settings ADD COLUMN is_locked INTEGER DEFAULT 1");
 
-// Helper to sanitize time representation for Google Sheets export
-function cleanTimeString(t: any): string {
-  if (!t) return "";
+// Helper to sanitize time representation for Google Sheets export & imports
+function cleanTimeString(t: any, defaultVal = "10:00"): string {
+  if (!t) return defaultVal;
   const str = String(t).trim();
-  if (str.includes("T")) {
-    const timePart = str.split("T")[1]?.split(".")[0];
-    return timePart ? timePart.slice(0, 5) : str;
+
+  // If already standard HH:MM (e.g., 09:15, 10:00, 19:00)
+  if (/^([01]\\d|2[0-3]):[0-5]\\d$/.test(str)) {
+    return str;
   }
-  return str.slice(0, 5);
+
+  // Handle Google Sheet 1899-12-30 ISO timestamp bugs
+  if (str.includes("T") || str.includes("1899")) {
+    if (str.includes("04:38") || str.includes("22:16") || str.includes("03:38") || str.includes("22:31")) {
+      return defaultVal === "19:00" ? "19:00" : "10:00";
+    }
+    if (str.includes("13:38") || str.includes("08:16") || str.includes("07:16")) {
+      return "19:00";
+    }
+    const timePart = str.split("T")[1]?.split(".")[0];
+    if (timePart && timePart.length >= 5) {
+      return timePart.slice(0, 5);
+    }
+  }
+
+  return str.slice(0, 5) || defaultVal;
 }
 
 // Seed Master Departments
@@ -357,7 +373,7 @@ function restoreDatabaseFromJson() {
             radius = excluded.radius,
             work_start_time = excluded.work_start_time,
             work_end_time = excluded.work_end_time
-        `).run(st.id || null, st.name, st.address || null, Number(st.latitude), Number(st.longitude), Number(st.radius) || 150, cleanTimeString(st.work_start_time) || '10:00', cleanTimeString(st.work_end_time) || '19:00');
+        `).run(st.id || null, st.name, st.address || null, Number(st.latitude), Number(st.longitude), Number(st.radius) || 150, cleanTimeString(st.work_start_time, '10:00'), cleanTimeString(st.work_end_time, '19:00'));
       }
     }
 
@@ -383,7 +399,7 @@ function restoreDatabaseFromJson() {
           u.id || null, u.registration_id, u.name, u.username || null, u.email || null, u.phone || null,
           u.role || 'user', u.department_id || 1, u.site_name || 'ARAMUS RUDRA', u.password || 'password123',
           u.designation || 'Staff', Number(u.allowed_devices) || 1, u.bound_device_id || null,
-          cleanTimeString(u.work_start_time) || '10:00', cleanTimeString(u.work_end_time) || '19:00',
+          cleanTimeString(u.work_start_time, '10:00'), cleanTimeString(u.work_end_time, '19:00'),
           Number(u.monthly_salary) || 0, u.date_of_joining || ''
         );
       }
@@ -417,7 +433,7 @@ function backupDatabaseToJson() {
 
 restoreDatabaseFromJson();
 
-// Auto-Restore from Google Sheets on Server Boot
+// Auto-Restore from Google Sheets on Server Boot with Corrupt Time Protection
 async function autoSyncFromGoogleSheetsOnBoot() {
   try {
     let settings = db.prepare("SELECT * FROM sheet_settings WHERE id = 1").get() as any;
@@ -430,6 +446,7 @@ async function autoSyncFromGoogleSheetsOnBoot() {
     if (resJson.success && resJson.data) {
       const d = resJson.data;
 
+      // Ensure sheet settings is restored in DB
       db.prepare(`
         INSERT INTO sheet_settings (id, web_app_url, sync_enabled, is_locked)
         VALUES (1, ?, 1, 1)
@@ -441,7 +458,10 @@ async function autoSyncFromGoogleSheetsOnBoot() {
         for (const u of d.users) {
           const empName = u.name || u.full_name || u['Full Name'];
           const regCode = u.registration_id || u.employee_code || u['Employee Code'] || u.user_id || u['User ID'];
-          if (empName && u.role !== 'super_admin') {
+          if (empName && u.role !== 'super_admin' && u.role !== 'director') {
+            const cleanStart = cleanTimeString(u.work_start_time || u.work_start || u['Shift Start'], '10:00');
+            const cleanEnd = cleanTimeString(u.work_end_time || u.work_end || u['Shift End'], '19:00');
+
             db.prepare(`
               INSERT INTO users (registration_id, name, username, email, phone, role, site_name, designation, monthly_salary, password, work_start_time, work_end_time, allowed_devices, bound_device_id)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -455,16 +475,20 @@ async function autoSyncFromGoogleSheetsOnBoot() {
                 designation = excluded.designation,
                 monthly_salary = excluded.monthly_salary,
                 password = COALESCE(excluded.password, users.password),
-                work_start_time = excluded.work_start_time,
-                work_end_time = excluded.work_end_time,
+                work_start_time = CASE 
+                  WHEN excluded.work_start_time NOT LIKE '%1899%' AND excluded.work_start_time != '' THEN excluded.work_start_time 
+                  ELSE COALESCE(users.work_start_time, '10:00') 
+                END,
+                work_end_time = CASE 
+                  WHEN excluded.work_end_time NOT LIKE '%1899%' AND excluded.work_end_time != '' THEN excluded.work_end_time 
+                  ELSE COALESCE(users.work_end_time, '19:00') 
+                END,
                 allowed_devices = COALESCE(excluded.allowed_devices, users.allowed_devices)
             `).run(
               regCode || null, empName, u.username || null, u.email || null, u.phone || null,
               u.role || 'user', u.site_name || u.branch___site || 'ARAMUS RUDRA', u.designation || 'Staff',
               Number(u.monthly_salary || u.monthly_salary_____) || 0, u.password || 'password123',
-              cleanTimeString(u.work_start_time || u.work_start || u['Shift Start']) || '10:00',
-              cleanTimeString(u.work_end_time || u.work_end || u['Shift End']) || '19:00',
-              Number(u.allowed_devices) || 1, u.bound_device_id || null
+              cleanStart, cleanEnd, Number(u.allowed_devices) || 1, u.bound_device_id || null
             );
           }
         }
@@ -489,8 +513,8 @@ async function autoSyncFromGoogleSheetsOnBoot() {
               sName, s.address || s['Address'] || '', Number(s.latitude || s['Latitude']) || 19.04574,
               Number(s.longitude || s['Longitude']) || 73.08025,
               Number(s.radius || s.radius__meters_ || s['Radius (Meters)']) || 150,
-              cleanTimeString(s.work_start_time || s.shift_start || s['Shift Start']) || '10:00',
-              cleanTimeString(s.work_end_time || s.shift_end || s['Shift End']) || '19:00'
+              cleanTimeString(s.work_start_time || s.shift_start || s['Shift Start'], '10:00'),
+              cleanTimeString(s.work_end_time || s.shift_end || s['Shift End'], '19:00')
             );
           }
         }
@@ -513,8 +537,8 @@ async function autoSyncFromGoogleSheetsOnBoot() {
                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 `).run(
                   user.id, attDate,
-                  cleanTimeString(a.check_in || a['Check In']),
-                  cleanTimeString(a.check_out || a['Check Out']),
+                  cleanTimeString(a.check_in || a['Check In'], ''),
+                  cleanTimeString(a.check_out || a['Check Out'], ''),
                   a.status === 'Present' ? 'P' : (a.status === 'Late' ? 'L' : (a.status || 'P')),
                   a.method || 'app', a.site_name || a.branch___site || 'ARAMUS RUDRA',
                   Number(a.late_minutes || a.late__min_) || 0, Number(a.overtime_hours || a.overtime__hrs_) || 0
@@ -533,6 +557,7 @@ async function autoSyncFromGoogleSheetsOnBoot() {
   }
 }
 
+// Call on startup after 3 seconds
 setTimeout(() => {
   autoSyncFromGoogleSheetsOnBoot();
 }, 3000);
@@ -545,8 +570,8 @@ async function syncFullDatabaseToSheets(): Promise<{ success: boolean; message: 
     const rawUsers = db.prepare("SELECT * FROM users").all() as any[];
     const users = rawUsers.map(u => ({
       ...u,
-      work_start_time: cleanTimeString(u.work_start_time),
-      work_end_time: cleanTimeString(u.work_end_time)
+      work_start_time: cleanTimeString(u.work_start_time, '10:00'),
+      work_end_time: cleanTimeString(u.work_end_time, '19:00')
     }));
 
     const rawAttendance = db.prepare(`
@@ -562,15 +587,15 @@ async function syncFullDatabaseToSheets(): Promise<{ success: boolean; message: 
     const attendance = rawAttendance.map(a => ({
       ...a,
       date: a.date ? String(a.date).split("T")[0] : "",
-      check_in: cleanTimeString(a.check_in),
-      check_out: cleanTimeString(a.check_out)
+      check_in: cleanTimeString(a.check_in, ''),
+      check_out: cleanTimeString(a.check_out, '')
     }));
 
     const rawSites = db.prepare("SELECT * FROM sites").all() as any[];
     const sites = rawSites.map(s => ({
       ...s,
-      work_start_time: cleanTimeString(s.work_start_time),
-      work_end_time: cleanTimeString(s.work_end_time)
+      work_start_time: cleanTimeString(s.work_start_time, '10:00'),
+      work_end_time: cleanTimeString(s.work_end_time, '19:00')
     }));
 
     const designations = db.prepare("SELECT * FROM designations").all() as any[];
@@ -650,8 +675,8 @@ async function appendAttendanceLogLive(userId: number, date: string, checkInTime
         record: {
           id: `ATT-${userId}-${date}`,
           date: date.split("T")[0],
-          check_in: cleanTimeString(checkInTime),
-          check_out: cleanTimeString(checkoutTime),
+          check_in: cleanTimeString(checkInTime, ''),
+          check_out: cleanTimeString(checkoutTime, ''),
           registration_id: user.registration_id || "",
           name: user.name,
           designation: user.designation || "Staff",
@@ -680,7 +705,7 @@ async function startServer() {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
   });
 
-  // Login Handler with Automatic Hardware Fingerprint & Strict Device Locking
+  // Login Handler with Strict Hardware Device Access Limit
   app.post("/api/login", (req, res) => {
     const { identifier, username, password, deviceId } = req.body;
     const searchVal = String(identifier || username || "").trim();
@@ -707,7 +732,7 @@ async function startServer() {
       return res.status(401).json({ success: false, message: "Incorrect password." });
     }
 
-    // 🔒 Generate Hardware Fingerprint even if frontend doesn't pass deviceId
+    // Hardware device fingerprint calculation
     const incomingHeaderDevice = (req.headers['x-device-id'] as string) || (req.headers['user-agent'] || "").slice(0, 100);
     const clientIp = ((req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || "").split(',')[0].trim();
     const effectiveDeviceId = String(deviceId || incomingHeaderDevice || clientIp || "DEVICE_UNKNOWN").trim();
@@ -736,17 +761,16 @@ async function startServer() {
   });
 
   // =========================================================================
-  // 1. UNIVERSAL DEVICE RESET API (Solves Photo 2 <!DOCTYPE JSON Error)
-  // Handles POST, PUT, GET, DELETE across all possible URL patterns
+  // UNIVERSAL DEVICE RESET API (Catches both reset_device and reset-device)
   // =========================================================================
   const handleUniversalDeviceReset = (req: express.Request, res: express.Response) => {
-    const targetId = req.params.id || req.body.userId || req.body.id || req.query.userId || req.query.id;
+    const targetId = req.params.id || req.body?.userId || req.body?.id || req.query?.userId || req.query?.id;
     if (!targetId) {
       return res.status(400).json({ success: false, message: "User ID is required to reset device binding." });
     }
 
     try {
-      db.prepare("UPDATE users SET bound_device_id = NULL, last_device_info = NULL WHERE id = ?").run(targetId);
+      db.prepare("UPDATE users SET bound_device_id = NULL, last_device_info = NULL WHERE id = ? OR registration_id = ?").run(targetId, targetId);
       backupDatabaseToJson();
       triggerLiveSync('reset_device');
       console.log(`>>> Device lock cleared successfully for User ID: ${targetId}`);
@@ -757,10 +781,12 @@ async function startServer() {
   };
 
   app.all([
+    "/api/users/:id/reset_device",
+    "/api/super_admin/users/:id/reset_device",
     "/api/users/:id/reset-device",
     "/api/super_admin/users/:id/reset-device",
     "/api/users/reset-device",
-    "/api/users/reset-device/:id",
+    "/api/users/reset_device",
     "/api/users/:id/unbind",
     "/api/super_admin/users/:id/unbind"
   ], handleUniversalDeviceReset);
@@ -876,8 +902,8 @@ async function startServer() {
       `).run(
         cleanRegId, derivedUsername, name.trim(), cleanEmail, cleanPhone, country || null, 
         role || 'user', department_id || null, site_name || 'ARAMUS RUDRA', defaultPwd, 
-        designation || 'Staff', Number(allowed_devices) || 1, cleanTimeString(work_start_time) || '10:00', 
-        cleanTimeString(work_end_time) || '19:00', Number(monthly_salary) || 0, 
+        designation || 'Staff', Number(allowed_devices) || 1, cleanTimeString(work_start_time, '10:00'), 
+        cleanTimeString(work_end_time, '19:00'), Number(monthly_salary) || 0, 
         date_of_joining || new Date().toISOString().split('T')[0]
       );
 
@@ -933,8 +959,8 @@ async function startServer() {
         department_id !== undefined ? department_id : null, site_name !== undefined ? site_name : null, 
         password && password.trim() ? password.trim() : null, designation !== undefined ? designation : null, 
         allowed_devices !== undefined ? Number(allowed_devices) : null, 
-        work_start_time !== undefined ? cleanTimeString(work_start_time) : null, 
-        work_end_time !== undefined ? cleanTimeString(work_end_time) : null, 
+        work_start_time !== undefined ? cleanTimeString(work_start_time, '10:00') : null, 
+        work_end_time !== undefined ? cleanTimeString(work_end_time, '19:00') : null, 
         monthly_salary !== undefined ? Number(monthly_salary) : null, 
         date_of_joining !== undefined ? date_of_joining : null, id
       );
@@ -970,7 +996,56 @@ async function startServer() {
     }
   });
 
-  // Attendance Punch In / Out
+  // =========================================================================
+  // ADMIN ATTENDANCE RECORD: EDIT & DELETE APIS
+  // =========================================================================
+
+  // 1. Delete Attendance Entry
+  app.delete(["/api/attendance/:id", "/api/super_admin/attendance/:id"], (req, res) => {
+    const { id } = req.params;
+    try {
+      const record = db.prepare("SELECT * FROM attendance WHERE id = ?").get(id) as any;
+      if (!record) return res.status(404).json({ success: false, message: "Attendance record not found." });
+
+      db.prepare("DELETE FROM attendance WHERE id = ?").run(id);
+      backupDatabaseToJson();
+      triggerLiveSync('delete_attendance');
+      return res.json({ success: true, message: "Attendance record deleted successfully." });
+    } catch (e: any) {
+      return res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  // 2. Update / Edit Attendance Entry (Check-In, Check-Out, Status, Late Reason)
+  app.put(["/api/attendance/:id", "/api/super_admin/attendance/:id"], (req, res) => {
+    const { id } = req.params;
+    const { check_in, check_out, status, late_reason, early_checkout_reason } = req.body;
+    try {
+      const record = db.prepare("SELECT * FROM attendance WHERE id = ?").get(id) as any;
+      if (!record) return res.status(404).json({ success: false, message: "Attendance record not found." });
+
+      const cleanIn = check_in !== undefined ? cleanTimeString(check_in, '') : record.check_in;
+      const cleanOut = check_out !== undefined ? cleanTimeString(check_out, '') : record.check_out;
+
+      db.prepare(`
+        UPDATE attendance 
+        SET check_in = ?,
+            check_out = ?,
+            status = COALESCE(?, status),
+            late_reason = COALESCE(?, late_reason),
+            early_checkout_reason = COALESCE(?, early_checkout_reason)
+        WHERE id = ?
+      `).run(cleanIn || null, cleanOut || null, status || null, late_reason || null, early_checkout_reason || null, id);
+
+      backupDatabaseToJson();
+      triggerLiveSync('update_attendance');
+      return res.json({ success: true, message: "Attendance record updated successfully." });
+    } catch (e: any) {
+      return res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  // Attendance Punch In
   app.post("/api/attendance/check-in", (req, res) => {
     const { userId, date, time, location, method, sessionId, deviceId, photoUrl, lateReason } = req.body;
     
@@ -1009,7 +1084,8 @@ async function startServer() {
     let isLate = 0;
     let lateMinutes = 0;
 
-    const timeParts = (cleanTimeString(time) || "10:00").split(":");
+    const cleanTime = cleanTimeString(time, "10:00");
+    const timeParts = cleanTime.split(":");
     const totalMinutes = parseInt(timeParts[0], 10) * 60 + parseInt(timeParts[1] || "0", 10);
     const standardStartMinutes = 10 * 60;
 
@@ -1019,7 +1095,6 @@ async function startServer() {
       lateMinutes = totalMinutes - standardStartMinutes;
     }
 
-    const cleanTime = cleanTimeString(time);
     const result = db.prepare(`
       INSERT INTO attendance (user_id, session_id, date, check_in, status, location, method, ip_address, latitude, longitude, device_id, photo_url, is_proxy_flagged, is_late, late_minutes, late_reason)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1031,6 +1106,7 @@ async function startServer() {
     res.json({ success: true, id: result.lastInsertRowid, isLate: isLate === 1, lateMinutes, status });
   });
 
+  // Attendance Punch Out
   app.post("/api/attendance/check-out", (req, res) => {
     const { userId, date, time, earlyCheckoutReason } = req.body;
     try {
@@ -1038,7 +1114,7 @@ async function startServer() {
       if (!lastRecord) return res.status(404).json({ success: false, message: "No check-in record found for today." });
       if (lastRecord.check_out) return res.status(400).json({ success: false, message: "Already checked out today" });
 
-      const cleanOutTime = cleanTimeString(time);
+      const cleanOutTime = cleanTimeString(time, "19:00");
       let overtimeHours = 0;
       if (cleanOutTime) {
         const timeParts = cleanOutTime.split(":");
@@ -1099,8 +1175,8 @@ async function startServer() {
         return res.status(404).json({ success: false, message: "Staff member not found in database." });
       }
 
-      const finalCheckIn = cleanTimeString(checkIn || check_in || "09:00");
-      const finalCheckOut = cleanTimeString(checkOut || check_out || "19:00");
+      const finalCheckIn = cleanTimeString(checkIn || check_in, "09:00");
+      const finalCheckOut = cleanTimeString(checkOut || check_out, "19:00");
       const finalStatus = status || "P";
       const finalReason = remarks || reason || "Manual Punch by Admin";
       const finalSite = site_name || user.site_name || "ARAMUS RUDRA";
@@ -1243,7 +1319,7 @@ async function startServer() {
           for (const u of d.users) {
             const empName = u.name || u.full_name || u['Full Name'];
             const regCode = u.registration_id || u.employee_code || u['Employee Code'] || u.user_id || u['User ID'];
-            if (empName && u.role !== 'super_admin') {
+            if (empName && u.role !== 'super_admin' && u.role !== 'director') {
               try {
                 db.prepare(`
                   INSERT INTO users (registration_id, name, username, email, phone, role, site_name, designation, monthly_salary, password, work_start_time, work_end_time, allowed_devices, bound_device_id)
@@ -1258,15 +1334,21 @@ async function startServer() {
                     designation = excluded.designation,
                     monthly_salary = excluded.monthly_salary,
                     password = COALESCE(excluded.password, users.password),
-                    work_start_time = excluded.work_start_time,
-                    work_end_time = excluded.work_end_time,
+                    work_start_time = CASE 
+                      WHEN excluded.work_start_time NOT LIKE '%1899%' AND excluded.work_start_time != '' THEN excluded.work_start_time 
+                      ELSE COALESCE(users.work_start_time, '10:00') 
+                    END,
+                    work_end_time = CASE 
+                      WHEN excluded.work_end_time NOT LIKE '%1899%' AND excluded.work_end_time != '' THEN excluded.work_end_time 
+                      ELSE COALESCE(users.work_end_time, '19:00') 
+                    END,
                     allowed_devices = COALESCE(excluded.allowed_devices, users.allowed_devices)
                 `).run(
                   regCode || null, empName, u.username || null, u.email || null, u.phone || null,
                   u.role || 'user', u.site_name || u.branch___site || 'ARAMUS RUDRA', u.designation || 'Staff',
                   Number(u.monthly_salary || u.monthly_salary_____) || 0, u.password || 'password123',
-                  cleanTimeString(u.work_start_time || u.work_start || u['Shift Start']) || '10:00',
-                  cleanTimeString(u.work_end_time || u.work_end || u['Shift End']) || '19:00',
+                  cleanTimeString(u.work_start_time || u.work_start || u['Shift Start'], '10:00'),
+                  cleanTimeString(u.work_end_time || u.work_end || u['Shift End'], '19:00'),
                   Number(u.allowed_devices) || 1, u.bound_device_id || null
                 );
               } catch (_) {}
@@ -1294,8 +1376,8 @@ async function startServer() {
                   sName, s.address || s['Address'] || '', Number(s.latitude || s['Latitude']) || 19.04574,
                   Number(s.longitude || s['Longitude']) || 73.08025,
                   Number(s.radius || s.radius__meters_ || s['Radius (Meters)']) || 150,
-                  cleanTimeString(s.work_start_time || s.shift_start || s['Shift Start']) || '10:00',
-                  cleanTimeString(s.work_end_time || s.shift_end || s['Shift End']) || '19:00'
+                  cleanTimeString(s.work_start_time || s.shift_start || s['Shift Start'], '10:00'),
+                  cleanTimeString(s.work_end_time || s.shift_end || s['Shift End'], '19:00')
                 );
               } catch (_) {}
             }
@@ -1319,8 +1401,8 @@ async function startServer() {
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                   `).run(
                     user.id, attDate,
-                    cleanTimeString(a.check_in || a['Check In']),
-                    cleanTimeString(a.check_out || a['Check Out']),
+                    cleanTimeString(a.check_in || a['Check In'], ''),
+                    cleanTimeString(a.check_out || a['Check Out'], ''),
                     a.status === 'Present' ? 'P' : (a.status === 'Late' ? 'L' : (a.status || 'P')),
                     a.method || 'app', a.site_name || a.branch___site || 'ARAMUS RUDRA',
                     Number(a.late_minutes || a.late__min_) || 0, Number(a.overtime_hours || a.overtime__hrs_) || 0
@@ -1384,8 +1466,8 @@ async function startServer() {
           cleanLat,
           cleanLng,
           cleanRadius,
-          cleanTimeString(work_start_time) || null,
-          cleanTimeString(work_end_time) || null,
+          cleanTimeString(work_start_time, '10:00') || null,
+          cleanTimeString(work_end_time, '19:00') || null,
           existingSite.id
         );
 
@@ -1411,8 +1493,8 @@ async function startServer() {
           cleanLat,
           cleanLng,
           cleanRadius,
-          cleanTimeString(work_start_time) || '10:00',
-          cleanTimeString(work_end_time) || '19:00'
+          cleanTimeString(work_start_time, '10:00') || '10:00',
+          cleanTimeString(work_end_time, '19:00') || '19:00'
         );
 
         backupDatabaseToJson();
@@ -1478,12 +1560,15 @@ async function startServer() {
     }
 
     if (req.method === 'POST') {
-      const { userId, date, startDate, endDate, checkIn, checkOut, reason, siteName, type, halfDaySlot } = req.body;
+      const { userId, date, startDate, endDate, checkIn, checkOut, requested_check_in, requested_check_out, reason, siteName, type, halfDaySlot } = req.body;
       try {
         const user = db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as any;
         if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
         const targetDate = date || startDate || new Date().toISOString().split('T')[0];
+        const inTime = cleanTimeString(checkIn || requested_check_in, '');
+        const outTime = cleanTimeString(checkOut || requested_check_out, '');
+
         const result = db.prepare(`
           INSERT INTO attendance_requests (user_id, date, start_date, end_date, check_in, check_out, reason, site_name, type, half_day_slot, status)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')
@@ -1492,8 +1577,8 @@ async function startServer() {
           targetDate, 
           startDate || targetDate, 
           endDate || targetDate, 
-          cleanTimeString(checkIn) || null, 
-          cleanTimeString(checkOut) || null, 
+          inTime || null, 
+          outTime || null, 
           reason || null, 
           siteName || user.site_name || null, 
           type || 'CORRECTION', 
@@ -1562,7 +1647,7 @@ async function startServer() {
         WHERE id = ? AND status = 'PENDING'
       `).run(
         targetDate || null, startDate || targetDate || null, endDate || targetDate || null,
-        cleanTimeString(checkIn) || null, cleanTimeString(checkOut) || null,
+        cleanTimeString(checkIn, '') || null, cleanTimeString(checkOut, '') || null,
         reason || null, type || null, halfDaySlot || null, id
       );
 
@@ -1614,12 +1699,12 @@ async function startServer() {
         UPDATE attendance_requests 
         SET status = 'REJECTED', admin_comment = ?, actioned_at = CURRENT_TIMESTAMP, actioned_by = ?
         WHERE id = ?
-      `).run(adminComment || 'Rejected by management', actionedBy || 'Admin', id);
+      `).run(adminComment || 'Declined by management', actionedBy || 'Admin', id);
 
-      const notifMsg = `Your ${request.type} request for ${request.date || request.start_date} was REJECTED: "${adminComment || 'No comment'}"`;
+      const notifMsg = `Your ${request.type} request for ${request.date || request.start_date} was DECLINED: "${adminComment || 'No comment'}"`;
       db.prepare(`
         INSERT INTO notifications (user_id, title, message, type, is_read)
-        VALUES (?, 'Request Rejected ❌', ?, 'warning', 0)
+        VALUES (?, 'Request Declined ❌', ?, 'warning', 0)
       `).run(request.user_id, notifMsg);
 
       backupDatabaseToJson();
@@ -1645,10 +1730,19 @@ async function startServer() {
     }
   });
 
-  app.post("/api/notifications/mark-read", (req, res) => {
+  app.post("/api/notifications/:id/read", (req, res) => {
+    try {
+      db.prepare("UPDATE notifications SET is_read = 1 WHERE id = ?").run(req.params.id);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  app.post("/api/notifications/clear", (req, res) => {
     const { userId } = req.body;
     try {
-      db.prepare("UPDATE notifications SET is_read = 1 WHERE user_id = ? OR user_id IS NULL").run(userId || null);
+      db.prepare("DELETE FROM notifications WHERE user_id = ? OR user_id IS NULL").run(userId || null);
       res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ success: false, message: e.message });
