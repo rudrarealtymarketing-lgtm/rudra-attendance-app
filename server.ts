@@ -182,7 +182,7 @@ db.exec(`
     name TEXT UNIQUE NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
-\`);
+`);
 
 // Migrations
 const userTableInfo = db.prepare("PRAGMA table_info(users)").all() as any[];
@@ -248,7 +248,7 @@ function cleanTimeString(t: any, defaultVal = "10:00"): string {
   const str = String(t).trim();
 
   // If already standard HH:MM (e.g., 09:15, 10:00, 19:00)
-  if (/^([01]\\d|2[0-3]):[0-5]\\d$/.test(str)) {
+  if (/^([01]\d|2[0-3]):[0-5]\d$/.test(str)) {
     return str;
   }
 
@@ -520,7 +520,7 @@ async function autoSyncFromGoogleSheetsOnBoot() {
         }
       }
 
-      // 3. Restore Attendance Logs
+      // 3. Restore Attendance Logs (Protected: Never Overwrite Live DB Entries)
       if (Array.isArray(d.attendance) && d.attendance.length > 0) {
         for (const a of d.attendance) {
           const regId = a.registration_id || a.employee_code || a['Employee Code'];
@@ -1159,8 +1159,8 @@ async function startServer() {
         SELECT * FROM users 
         WHERE id = ? 
            OR registration_id = ? 
-           OR LOWER(registration_id) = LOWER(?)
-           OR LOWER(name) = LOWER(?)
+           OR LOWER(registration_id) = LOWER(?) 
+           OR LOWER(name) = LOWER(?) 
            OR LOWER(username) = LOWER(?)
       `).get(rawTarget, rawTarget, rawTarget, rawTarget, rawTarget) as any;
 
@@ -1186,12 +1186,12 @@ async function startServer() {
       if (existing) {
         db.prepare(`
           UPDATE attendance 
-          SET check_in = ?, check_out = ?, status = ?, late_reason = ?, method = 'manual', location = COALESCE(?, location)
+          SET check_in = ?, check_out = ?, status = ?, late_reason = ?, method = 'manual', location = COALESCE(?, location) 
           WHERE id = ?
         `).run(finalCheckIn, finalCheckOut, finalStatus, finalReason, location || finalSite, existing.id);
       } else {
         db.prepare(`
-          INSERT INTO attendance (user_id, date, check_in, check_out, status, method, late_reason, location)
+          INSERT INTO attendance (user_id, date, check_in, check_out, status, method, late_reason, location) 
           VALUES (?, ?, ?, ?, ?, 'manual', ?, ?)
         `).run(user.id, targetDate, finalCheckIn, finalCheckOut, finalStatus, finalReason, location || finalSite);
       }
@@ -1384,7 +1384,7 @@ async function startServer() {
           }
         }
 
-        // 3. Restore Attendance
+        // 3. Restore Attendance (Protected: Never Overwrite Live DB Entries)
         if (Array.isArray(d.attendance) && d.attendance.length > 0) {
           for (const a of d.attendance) {
             const regId = a.registration_id || a.employee_code || a['Employee Code'];
