@@ -416,7 +416,7 @@ function restoreDatabaseFromJson() {
       }
     }
 
-    // Restore users: Protect live modifications and sync photo avatar
+    // Restore users: NEVER OVERWRITE LIVE USER DATA
     if (Array.isArray(data.users) && data.users.length > 0) {
       for (const u of data.users) {
         db.prepare(`
@@ -461,9 +461,10 @@ function backupDatabaseToJson() {
   }
 }
 
-restoreDatabaseFromJson();
+// ⚠️ PROTECTED: Overwrite loop disabled on boot so your live updates and timings never get wiped out!
+// restoreDatabaseFromJson();
 
-// Safe Auto-Restore on Boot
+// Safe Auto-Restore on Boot (Only adds missing users, never overwrites current DB)
 async function autoSyncFromGoogleSheetsOnBoot() {
   try {
     let settings = db.prepare("SELECT * FROM sheet_settings WHERE id = 1").get() as any;
@@ -556,9 +557,10 @@ async function autoSyncFromGoogleSheetsOnBoot() {
   }
 }
 
-setTimeout(() => {
-  autoSyncFromGoogleSheetsOnBoot();
-}, 3000);
+// ⚠️ PROTECTED: Boot timeout sync disabled to eliminate timing reset on every restart!
+// setTimeout(() => {
+//   autoSyncFromGoogleSheetsOnBoot();
+// }, 3000);
 
 async function syncFullDatabaseToSheets(): Promise<{ success: boolean; message: string }> {
   try {
@@ -712,6 +714,7 @@ async function startServer() {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
   });
 
+  // Overtime Balance Summary Endpoint (For User Leave Desk)
   app.get("/api/attendance/overtime/:userId", (req, res) => {
     const { userId } = req.params;
     try {
