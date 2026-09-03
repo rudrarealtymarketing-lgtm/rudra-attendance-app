@@ -26,7 +26,7 @@ try {
 }
 console.log("Database initialized with WAL mode");
 
-// Always get Indian Standard Time (IST) Date string (YYYY-MM-DD)
+// Always compute strictly against Indian Standard Time (UTC + 5:30)
 function getTodayISTDate(): string {
   const now = new Date();
   const istOffset = 5.5 * 60 * 60 * 1000;
@@ -56,7 +56,7 @@ const runMigration = (name: string, sql: string) => {
 };
 
 console.log("Running initial table creation...");
-// Initialize Database Tables
+// Initialize Master Database Tables
 db.exec(`
   CREATE TABLE IF NOT EXISTS departments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -416,7 +416,7 @@ function restoreDatabaseFromJson() {
       }
     }
 
-    // Restore users: NEVER OVERWRITE LIVE USER DATA
+    // Restore users: Only update avatar and hardware device bindings; NEVER OVERWRITE USER WORK SHIFTS
     if (Array.isArray(data.users) && data.users.length > 0) {
       for (const u of data.users) {
         db.prepare(`
@@ -461,16 +461,16 @@ function backupDatabaseToJson() {
   }
 }
 
-// ⚠️ PROTECTED: Overwrite loop disabled on boot so your live updates and timings never get wiped out!
-// restoreDatabaseFromJson();
+// Restore base backup without wiping live state
+restoreDatabaseFromJson();
 
-// Safe Auto-Restore on Boot (Only adds missing users, never overwrites current DB)
+// Safe Auto-Restore on Boot (Recovers missing staff without resetting live timings)
 async function autoSyncFromGoogleSheetsOnBoot() {
   try {
     let settings = db.prepare("SELECT * FROM sheet_settings WHERE id = 1").get() as any;
     let targetUrl = settings?.web_app_url || DEFAULT_WEB_APP_URL;
 
-    console.log(">>> Connecting to Google Sheets on boot...");
+    console.log(">>> Checking Google Sheets on boot...");
     const response = await fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getAllData`, { redirect: "follow" });
     const resJson = await response.json();
 
@@ -483,7 +483,7 @@ async function autoSyncFromGoogleSheetsOnBoot() {
         ON CONFLICT(id) DO UPDATE SET web_app_url = excluded.web_app_url
       `).run(targetUrl);
 
-      // Restore Only Missing Users
+      // Restore Missing Users only
       if (Array.isArray(d.users) && d.users.length > 0) {
         for (const u of d.users) {
           const empName = u.name || u.full_name || u['Full Name'];
@@ -508,7 +508,7 @@ async function autoSyncFromGoogleSheetsOnBoot() {
         }
       }
 
-      // Restore Only Missing Attendance Logs
+      // Restore Missing Attendance Logs only
       if (Array.isArray(d.attendance) && d.attendance.length > 0) {
         for (const a of d.attendance) {
           const regId = a.registration_id || a.employee_code || a['Employee Code'];
@@ -549,7 +549,7 @@ async function autoSyncFromGoogleSheetsOnBoot() {
         }
       }
 
-      console.log(">>> Google Sheets verified without overwriting local changes.");
+      console.log(">>> Google Sheets verified without overwriting local modifications.");
       backupDatabaseToJson();
     }
   } catch (err: any) {
@@ -557,10 +557,10 @@ async function autoSyncFromGoogleSheetsOnBoot() {
   }
 }
 
-// ⚠️ PROTECTED: Boot timeout sync disabled to eliminate timing reset on every restart!
-// setTimeout(() => {
-//   autoSyncFromGoogleSheetsOnBoot();
-// }, 3000);
+// Auto-Sync strictly executes non-destructive restore
+setTimeout(() => {
+  autoSyncFromGoogleSheetsOnBoot();
+}, 2500);
 
 async function syncFullDatabaseToSheets(): Promise<{ success: boolean; message: string }> {
   try {
@@ -659,7 +659,7 @@ function triggerLiveSync(context = "general") {
   });
 }
 
-// Stream punch to Google Sheet with 8-second Timeout controller
+// Stream punch to Google Sheet with 8-second Timeout controller to prevent freeze
 async function appendAttendanceLogLive(userId: number, date: string, checkInTime: string, status: string, method: string, sessionId: number | null, checkoutTime?: string, overtimeHours = 0) {
   try {
     const settings = db.prepare("SELECT * FROM sheet_settings WHERE id = 1").get() as any;
@@ -729,6 +729,7 @@ async function startServer() {
     }
   });
 
+  // Login Handler with Strict Hardware Device Access Limit
   app.post("/api/login", (req, res) => {
     const { identifier, username, password, deviceId } = req.body;
     const searchVal = String(identifier || username || "").trim();
@@ -780,6 +781,7 @@ async function startServer() {
     res.json({ success: true, user });
   });
 
+  // Universal Device Reset API
   const handleUniversalDeviceReset = (req: express.Request, res: express.Response) => {
     const targetId = req.params.id || req.body?.userId || req.body?.id || req.query?.userId || req.query?.id;
     if (!targetId) {
@@ -807,6 +809,7 @@ async function startServer() {
     "/api/super_admin/users/:id/unbind"
   ], handleUniversalDeviceReset);
 
+  // Universal Password Change Handler
   const handleUniversalPasswordChange = (req: express.Request, res: express.Response) => {
     const { 
       userId, id, user_id, registration_id, email,
@@ -860,6 +863,7 @@ async function startServer() {
     "/api/users/:id/password"
   ], handleUniversalPasswordChange);
 
+  // Users Directory
   app.get("/api/users", (req, res) => {
     const { siteName } = req.query;
     let users;
@@ -1156,7 +1160,7 @@ async function startServer() {
     res.json({ success: true, id: result.lastInsertRowid, isLate: isLate === 1, lateMinutes, status });
   });
 
-  // Attendance Punch Out
+  // Attendance Punch Out with Automatic Overtime
   app.post("/api/attendance/check-out", (req, res) => {
     const { userId, date, time, earlyCheckoutReason } = req.body;
     try {
