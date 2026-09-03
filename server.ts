@@ -26,6 +26,21 @@ try {
 }
 console.log("Database initialized with WAL mode");
 
+// Always get Indian Standard Time (IST) Date string (YYYY-MM-DD)
+function getTodayISTDate(): string {
+  const now = new Date();
+  const istOffset = 5.5 * 60 * 60 * 1000;
+  const istDate = new Date(now.getTime() + istOffset);
+  return istDate.toISOString().split('T')[0];
+}
+
+function getNowISTTimeString(): string {
+  const now = new Date();
+  const istOffset = 5.5 * 60 * 60 * 1000;
+  const istDate = new Date(now.getTime() + istOffset);
+  return istDate.toISOString().split('T')[1].slice(0, 5);
+}
+
 // Migration helper
 const runMigration = (name: string, sql: string) => {
   try {
@@ -520,7 +535,7 @@ async function autoSyncFromGoogleSheetsOnBoot() {
         }
       }
 
-      // 3. Restore Attendance Logs (Protected: Never Overwrite Live DB Entries)
+      // 3. Restore Attendance (Protected: Never Overwrite Live DB Entries)
       if (Array.isArray(d.attendance) && d.attendance.length > 0) {
         for (const a of d.attendance) {
           const regId = a.registration_id || a.employee_code || a['Employee Code'];
@@ -528,7 +543,19 @@ async function autoSyncFromGoogleSheetsOnBoot() {
           const user = db.prepare("SELECT id FROM users WHERE registration_id = ? OR name = ?").get(regId, aName) as any;
           if (user && (a.date || a['Date'])) {
             const rawDate = a.date || a['Date'];
-            const attDate = String(rawDate).includes("T") ? rawDate.split("T")[0] : rawDate;
+            let attDate = String(rawDate).trim();
+            if (attDate.includes("T")) {
+              attDate = attDate.split("T")[0];
+            } else if (attDate.includes("/")) {
+              const parts = attDate.split("/");
+              if (parts.length === 3) {
+                const y = parts[2].length === 4 ? parts[2] : `20${parts[2]}`;
+                const m = parts[1].padStart(2, '0');
+                const d = parts[0].padStart(2, '0');
+                attDate = `${y}-${m}-${d}`;
+              }
+            }
+
             const existing = db.prepare("SELECT id FROM attendance WHERE user_id = ? AND date = ?").get(user.id, attDate);
             if (!existing) {
               try {
@@ -659,7 +686,8 @@ function triggerLiveSync(context = "general") {
   });
 }
 
-async function appendAttendanceLogLive(userId: number, date: string, checkInTime: string, status: string, method: string, sessionId: number | null, checkoutTime?: string) {
+// Stream punch to Google Sheet with 8-second Timeout controller to prevent stalls
+async function appendAttendanceLogLive(userId: number, date: string, checkInTime: string, status: string, method: string, sessionId: number | null, checkoutTime?: string, overtimeHours = 0) {
   try {
     const settings = db.prepare("SELECT * FROM sheet_settings WHERE id = 1").get() as any;
     const targetUrl = settings?.web_app_url || DEFAULT_WEB_APP_URL;
@@ -667,29 +695,37 @@ async function appendAttendanceLogLive(userId: number, date: string, checkInTime
     const user = db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as any;
     if (!user) return;
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+    const payload = {
+      action: "appendAttendance",
+      record: {
+        id: `ATT-${userId}-${date}`,
+        date: date.split("T")[0],
+        check_in: cleanTimeString(checkInTime, ''),
+        check_out: cleanTimeString(checkoutTime, ''),
+        registration_id: user.registration_id || "",
+        name: user.name,
+        designation: user.designation || "Staff",
+        site_name: user.site_name || "ARAMUS RUDRA",
+        status: status === 'P' ? 'Present' : (status === 'L' ? 'Late' : (status === 'Half Day' ? 'Half Day' : status)),
+        overtime_hours: overtimeHours,
+        method: method || "App",
+        created_at: new Date().toISOString()
+      }
+    };
+
     await fetch(targetUrl, {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({
-        action: "appendAttendance",
-        record: {
-          id: `ATT-${userId}-${date}`,
-          date: date.split("T")[0],
-          check_in: cleanTimeString(checkInTime, ''),
-          check_out: cleanTimeString(checkoutTime, ''),
-          registration_id: user.registration_id || "",
-          name: user.name,
-          designation: user.designation || "Staff",
-          site_name: user.site_name || "ARAMUS RUDRA",
-          status: status === 'P' ? 'Present' : (status === 'L' ? 'Late' : (status === 'Half Day' ? 'Half Day' : status)),
-          method: method || "App",
-          created_at: new Date().toISOString()
-        }
-      }),
-      redirect: "follow"
+      body: JSON.stringify(payload),
+      redirect: "follow",
+      signal: controller.signal
     });
+    clearTimeout(timeoutId);
   } catch (err: any) {
-    console.error("Punch streaming error:", err.message);
+    console.error("Instant punch stream queued for batch sync:", err.message);
   }
 }
 
@@ -703,6 +739,21 @@ async function startServer() {
 
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
+  });
+
+  // Overtime Balance Summary Endpoint (For User Leave Desk)
+  app.get("/api/attendance/overtime/:userId", (req, res) => {
+    const { userId } = req.params;
+    try {
+      const rows = db.prepare("SELECT overtime_hours FROM attendance WHERE user_id = ?").all(userId) as any[];
+      let totalOvertime = 0;
+      rows.forEach(r => {
+        if (r.overtime_hours) totalOvertime += Number(r.overtime_hours);
+      });
+      res.json({ success: true, totalOvertimeHours: Math.round(totalOvertime * 10) / 10 });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
+    }
   });
 
   // Login Handler with Strict Hardware Device Access Limit
@@ -978,6 +1029,35 @@ async function startServer() {
   app.put("/api/users/:id", handleUpdateUser);
   app.put("/api/super_admin/users/:id", handleUpdateUser);
 
+  // User Profile Update (Self edit for photo, contact, personal info)
+  app.put("/api/users/:id/profile", (req, res) => {
+    const { id } = req.params;
+    const { email, current_address, marital_status, emergency_contact, date_of_birth, date_of_joining, avatar_url } = req.body;
+    try {
+      db.prepare(`
+        UPDATE users
+        SET email = COALESCE(?, email),
+            current_address = COALESCE(?, current_address),
+            marital_status = COALESCE(?, marital_status),
+            emergency_contact = COALESCE(?, emergency_contact),
+            date_of_birth = COALESCE(?, date_of_birth),
+            date_of_joining = COALESCE(?, date_of_joining),
+            avatar_url = COALESCE(?, avatar_url)
+        WHERE id = ?
+      `).run(
+        email || null, current_address || null, marital_status || null,
+        emergency_contact || null, date_of_birth || null, date_of_joining || null,
+        avatar_url || null, id
+      );
+      backupDatabaseToJson();
+      triggerLiveSync('update_profile');
+      const updatedUser = db.prepare("SELECT * FROM users WHERE id = ?").get(id);
+      res.json({ success: true, user: updatedUser });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
   app.delete(["/api/users/:id", "/api/super_admin/users/:id"], (req, res) => {
     const { id } = req.params;
     try {
@@ -1016,7 +1096,7 @@ async function startServer() {
     }
   });
 
-  // 2. Update / Edit Attendance Entry (Check-In, Check-Out, Status, Late Reason)
+  // 2. Update / Edit Attendance Entry (Check-In, Check-Out, Status, Late Reason, Overtime)
   app.put(["/api/attendance/:id", "/api/super_admin/attendance/:id"], (req, res) => {
     const { id } = req.params;
     const { check_in, check_out, status, late_reason, early_checkout_reason } = req.body;
@@ -1027,15 +1107,26 @@ async function startServer() {
       const cleanIn = check_in !== undefined ? cleanTimeString(check_in, '') : record.check_in;
       const cleanOut = check_out !== undefined ? cleanTimeString(check_out, '') : record.check_out;
 
+      // Re-calculate Overtime based on updated check_out (Past 19:00 / 07:00 PM)
+      let overtimeHours = 0;
+      if (cleanOut) {
+        const parts = cleanOut.split(":");
+        const totalMinutes = parseInt(parts[0], 10) * 60 + parseInt(parts[1] || "0", 10);
+        if (totalMinutes > (19 * 60)) {
+          overtimeHours = Math.round(((totalMinutes - (19 * 60)) / 60) * 10) / 10;
+        }
+      }
+
       db.prepare(`
         UPDATE attendance 
         SET check_in = ?,
             check_out = ?,
             status = COALESCE(?, status),
+            overtime_hours = ?,
             late_reason = COALESCE(?, late_reason),
             early_checkout_reason = COALESCE(?, early_checkout_reason)
         WHERE id = ?
-      `).run(cleanIn || null, cleanOut || null, status || null, late_reason || null, early_checkout_reason || null, id);
+      `).run(cleanIn || null, cleanOut || null, status || null, overtimeHours, late_reason || null, early_checkout_reason || null, id);
 
       backupDatabaseToJson();
       triggerLiveSync('update_attendance');
@@ -1071,7 +1162,9 @@ async function startServer() {
       }
     }
 
-    const existing = db.prepare("SELECT * FROM attendance WHERE user_id = ? AND date = ?").get(userId, date);
+    const actualDate = date || getTodayISTDate();
+
+    const existing = db.prepare("SELECT * FROM attendance WHERE user_id = ? AND date = ?").get(userId, actualDate);
     if (existing) {
       return res.status(400).json({ success: false, message: "Already checked in for today" });
     }
@@ -1084,7 +1177,7 @@ async function startServer() {
     let isLate = 0;
     let lateMinutes = 0;
 
-    const cleanTime = cleanTimeString(time, "10:00");
+    const cleanTime = cleanTimeString(time, getNowISTTimeString());
     const timeParts = cleanTime.split(":");
     const totalMinutes = parseInt(timeParts[0], 10) * 60 + parseInt(timeParts[1] || "0", 10);
     const standardStartMinutes = 10 * 60;
@@ -1098,27 +1191,29 @@ async function startServer() {
     const result = db.prepare(`
       INSERT INTO attendance (user_id, session_id, date, check_in, status, location, method, ip_address, latitude, longitude, device_id, photo_url, is_proxy_flagged, is_late, late_minutes, late_reason)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(userId, sessionId || null, date, cleanTime, status, location ? JSON.stringify(location) : null, method || 'app', ip || null, lat, lng, deviceId || null, photoUrl || null, 0, isLate, lateMinutes, lateReason || null);
+    `).run(userId, sessionId || null, actualDate, cleanTime, status, location ? JSON.stringify(location) : null, method || 'app', ip || null, lat, lng, deviceId || null, photoUrl || null, 0, isLate, lateMinutes, lateReason || null);
 
-    appendAttendanceLogLive(userId, date, cleanTime, status, method || 'app', sessionId || null);
+    appendAttendanceLogLive(userId, actualDate, cleanTime, status, method || 'app', sessionId || null);
     triggerLiveSync('attendance_punch_in');
 
     res.json({ success: true, id: result.lastInsertRowid, isLate: isLate === 1, lateMinutes, status });
   });
 
-  // Attendance Punch Out
+  // Attendance Punch Out with Automatic Overtime Engine
   app.post("/api/attendance/check-out", (req, res) => {
     const { userId, date, time, earlyCheckoutReason } = req.body;
     try {
-      const lastRecord = db.prepare("SELECT * FROM attendance WHERE user_id = ? AND date = ? ORDER BY id DESC LIMIT 1").get(userId, date) as any;
+      const actualDate = date || getTodayISTDate();
+      const lastRecord = db.prepare("SELECT * FROM attendance WHERE user_id = ? AND date = ? ORDER BY id DESC LIMIT 1").get(userId, actualDate) as any;
       if (!lastRecord) return res.status(404).json({ success: false, message: "No check-in record found for today." });
       if (lastRecord.check_out) return res.status(400).json({ success: false, message: "Already checked out today" });
 
-      const cleanOutTime = cleanTimeString(time, "19:00");
+      const cleanOutTime = cleanTimeString(time, getNowISTTimeString());
       let overtimeHours = 0;
       if (cleanOutTime) {
         const timeParts = cleanOutTime.split(":");
         const totalOutMinutes = parseInt(timeParts[0], 10) * 60 + parseInt(timeParts[1] || "0", 10);
+        // Standard shift concludes at 19:00 (07:00 PM). Extra minutes are credited to Overtime Hours!
         if (totalOutMinutes > (19 * 60)) {
           overtimeHours = Math.round(((totalOutMinutes - (19 * 60)) / 60) * 10) / 10;
         }
@@ -1130,7 +1225,7 @@ async function startServer() {
         WHERE id = ?
       `).run(cleanOutTime, earlyCheckoutReason || null, overtimeHours, lastRecord.id);
 
-      appendAttendanceLogLive(userId, date, lastRecord.check_in, lastRecord.status, lastRecord.method, lastRecord.session_id, cleanOutTime);
+      appendAttendanceLogLive(userId, actualDate, lastRecord.check_in, lastRecord.status, lastRecord.method, lastRecord.session_id, cleanOutTime, overtimeHours);
       triggerLiveSync('attendance_punch_out');
 
       res.json({ success: true, message: `Checked out at ${cleanOutTime}`, overtimeHours });
@@ -1148,7 +1243,7 @@ async function startServer() {
     } = req.body;
 
     const rawTarget = String(userId || user_id || registration_id || employee_code || name || user_name || "").trim();
-    const targetDate = date || new Date().toISOString().split('T')[0];
+    const targetDate = date || getTodayISTDate();
 
     if (!rawTarget) {
       return res.status(400).json({ success: false, message: "Please select a staff member." });
@@ -1181,23 +1276,32 @@ async function startServer() {
       const finalReason = remarks || reason || "Manual Punch by Admin";
       const finalSite = site_name || user.site_name || "ARAMUS RUDRA";
 
+      let overtimeHours = 0;
+      if (finalCheckOut) {
+        const parts = finalCheckOut.split(":");
+        const outMins = parseInt(parts[0], 10) * 60 + parseInt(parts[1] || "0", 10);
+        if (outMins > (19 * 60)) {
+          overtimeHours = Math.round(((outMins - (19 * 60)) / 60) * 10) / 10;
+        }
+      }
+
       const existing = db.prepare("SELECT * FROM attendance WHERE user_id = ? AND date = ?").get(user.id, targetDate) as any;
 
       if (existing) {
         db.prepare(`
           UPDATE attendance 
-          SET check_in = ?, check_out = ?, status = ?, late_reason = ?, method = 'manual', location = COALESCE(?, location) 
+          SET check_in = ?, check_out = ?, status = ?, overtime_hours = ?, late_reason = ?, method = 'manual', location = COALESCE(?, location) 
           WHERE id = ?
-        `).run(finalCheckIn, finalCheckOut, finalStatus, finalReason, location || finalSite, existing.id);
+        `).run(finalCheckIn, finalCheckOut, finalStatus, overtimeHours, finalReason, location || finalSite, existing.id);
       } else {
         db.prepare(`
-          INSERT INTO attendance (user_id, date, check_in, check_out, status, method, late_reason, location) 
-          VALUES (?, ?, ?, ?, ?, 'manual', ?, ?)
-        `).run(user.id, targetDate, finalCheckIn, finalCheckOut, finalStatus, finalReason, location || finalSite);
+          INSERT INTO attendance (user_id, date, check_in, check_out, status, overtime_hours, method, late_reason, location) 
+          VALUES (?, ?, ?, ?, ?, ?, 'manual', ?, ?)
+        `).run(user.id, targetDate, finalCheckIn, finalCheckOut, finalStatus, overtimeHours, finalReason, location || finalSite);
       }
 
       backupDatabaseToJson();
-      appendAttendanceLogLive(user.id, targetDate, finalCheckIn, finalStatus, 'manual', null, finalCheckOut || undefined);
+      appendAttendanceLogLive(user.id, targetDate, finalCheckIn, finalStatus, 'manual', null, finalCheckOut || undefined, overtimeHours);
       triggerLiveSync('manual_attendance');
 
       return res.json({ success: true, message: `Attendance saved successfully for ${user.name}!` });
@@ -1392,7 +1496,19 @@ async function startServer() {
             const user = db.prepare("SELECT id FROM users WHERE registration_id = ? OR name = ?").get(regId, aName) as any;
             if (user && (a.date || a['Date'])) {
               const rawDate = a.date || a['Date'];
-              const attDate = String(rawDate).includes("T") ? rawDate.split("T")[0] : rawDate;
+              let attDate = String(rawDate).trim();
+              if (attDate.includes("T")) {
+                attDate = attDate.split("T")[0];
+              } else if (attDate.includes("/")) {
+                const parts = attDate.split("/");
+                if (parts.length === 3) {
+                  const y = parts[2].length === 4 ? parts[2] : `20${parts[2]}`;
+                  const m = parts[1].padStart(2, '0');
+                  const d = parts[0].padStart(2, '0');
+                  attDate = `${y}-${m}-${d}`;
+                }
+              }
+
               const existing = db.prepare("SELECT id FROM attendance WHERE user_id = ? AND date = ?").get(user.id, attDate);
               if (!existing) {
                 try {
@@ -1540,9 +1656,7 @@ async function startServer() {
     res.json({ success: true, message: "Geofence settings updated." });
   });
 
-  // =========================================================================
-  // Requests / Approvals Workflow (Universal Multi-Endpoints)
-  // =========================================================================
+  // Requests Workflow (Universal Multi-Endpoints)
   app.all([
     "/api/attendance/request",
     "/api/attendance/requests",
@@ -1565,7 +1679,7 @@ async function startServer() {
         const user = db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as any;
         if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
-        const targetDate = date || startDate || new Date().toISOString().split('T')[0];
+        const targetDate = date || startDate || getTodayISTDate();
         const inTime = cleanTimeString(checkIn || requested_check_in, '');
         const outTime = cleanTimeString(checkOut || requested_check_out, '');
 
