@@ -56,7 +56,7 @@ const runMigration = (name: string, sql: string) => {
 };
 
 console.log("Running initial table creation...");
-// Initialize Database
+// Initialize Database Tables
 db.exec(`
   CREATE TABLE IF NOT EXISTS departments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,12 +68,32 @@ db.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     registration_id TEXT UNIQUE,
     name TEXT NOT NULL,
+    username TEXT,
     email TEXT UNIQUE,
     country TEXT,
     phone TEXT,
     role TEXT DEFAULT 'user',
     department_id INTEGER,
+    site_name TEXT DEFAULT 'ARAMUS RUDRA',
     password TEXT,
+    designation TEXT DEFAULT 'Staff',
+    monthly_salary REAL DEFAULT 0,
+    allowed_devices INTEGER DEFAULT 1,
+    bound_device_id TEXT,
+    last_device_info TEXT,
+    avatar_url TEXT,
+    work_start_time TEXT DEFAULT '10:00',
+    work_end_time TEXT DEFAULT '19:00',
+    date_of_joining TEXT,
+    date_of_birth TEXT,
+    emergency_contact TEXT,
+    bank_account TEXT,
+    ifsc_code TEXT,
+    upi_id TEXT,
+    pan_aadhaar TEXT,
+    current_address TEXT,
+    marital_status TEXT,
+    documents TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (department_id) REFERENCES departments(id)
   );
@@ -99,6 +119,17 @@ db.exec(`
     status TEXT,
     location TEXT,
     method TEXT,
+    ip_address TEXT,
+    latitude REAL,
+    longitude REAL,
+    device_id TEXT,
+    photo_url TEXT,
+    is_proxy_flagged INTEGER DEFAULT 0,
+    is_late INTEGER DEFAULT 0,
+    late_minutes INTEGER DEFAULT 0,
+    overtime_hours REAL DEFAULT 0,
+    early_checkout_reason TEXT,
+    late_reason TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id),
     FOREIGN KEY (session_id) REFERENCES sessions(id)
@@ -199,7 +230,7 @@ db.exec(`
   );
 `);
 
-// Migrations
+// Table migrations verification
 const userTableInfo = db.prepare("PRAGMA table_info(users)").all() as any[];
 if (!userTableInfo.some(col => col.name === 'username')) runMigration("add username", "ALTER TABLE users ADD COLUMN username TEXT");
 if (!userTableInfo.some(col => col.name === 'work_start_time')) runMigration("add work_start_time", "ALTER TABLE users ADD COLUMN work_start_time TEXT DEFAULT '10:00'");
@@ -257,17 +288,14 @@ const settingsTableInfo = db.prepare("PRAGMA table_info(sheet_settings)").all() 
 if (!settingsTableInfo.some(col => col.name === 'web_app_url')) runMigration("add web_app_url", "ALTER TABLE sheet_settings ADD COLUMN web_app_url TEXT");
 if (!settingsTableInfo.some(col => col.name === 'is_locked')) runMigration("add is_locked", "ALTER TABLE sheet_settings ADD COLUMN is_locked INTEGER DEFAULT 1");
 
-// Helper to sanitize time representation for Google Sheets export & imports
 function cleanTimeString(t: any, defaultVal = "10:00"): string {
   if (!t) return defaultVal;
   const str = String(t).trim();
 
-  // If already standard HH:MM (e.g., 09:15, 10:00, 19:00)
   if (/^([01]\d|2[0-3]):[0-5]\d$/.test(str)) {
     return str;
   }
 
-  // Handle Google Sheet 1899-12-30 ISO timestamp bugs
   if (str.includes("T") || str.includes("1899")) {
     if (str.includes("04:38") || str.includes("22:16") || str.includes("03:38") || str.includes("22:31")) {
       return defaultVal === "19:00" ? "19:00" : "10:00";
@@ -314,7 +342,6 @@ if (desigCount === 0) {
   for (const name of defaultDesignations) { stmt.run(name); }
 }
 
-// Default Super Admin & Director
 const existingAdmin = db.prepare("SELECT id FROM users WHERE role = 'super_admin' OR registration_id = 'ADMIN-01'").get();
 if (!existingAdmin) {
   db.prepare("INSERT INTO users (registration_id, name, email, role, department_id, password, designation, site_name, allowed_devices) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run("ADMIN-01", "Abhishek Bhatt (Admin)", "admin@rudra.com", "super_admin", 1, "admin123", "Chief Executive Officer (CEO)", "ARAMUS RUDRA", 99);
@@ -325,7 +352,7 @@ if (!existingDirector) {
   db.prepare("INSERT INTO users (registration_id, name, email, role, department_id, password, designation, site_name, allowed_devices) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run("DIR-01", "Director / Partner", "director@rudra.com", "director", 1, "director123", "Managing Director (MD)", "ARAMUS RUDRA", 99);
 }
 
-// Ensure All Official Sites Exist in SQLite by Default
+// Ensure All Official Sites Exist in SQLite
 const siteCountCheck = db.prepare("SELECT COUNT(*) as count FROM sites").get() as any;
 if (siteCountCheck.count <= 1) {
   const defaultSites = [
@@ -345,7 +372,6 @@ if (siteCountCheck.count <= 1) {
   }
 }
 
-// Ensure default sheet_settings row exists with the permanent Web App URL
 const DEFAULT_WEB_APP_URL = "https://script.google.com/macros/s/AKfycby-QMBlqhuh40b0MsMWlwRHKhzpvLmc1He1jBsh6E4g1jxWHScmU45jmla1DmAQ2v_Nrg/exec";
 const sheetSettingsRow = db.prepare("SELECT * FROM sheet_settings WHERE id = 1").get() as any;
 if (!sheetSettingsRow) {
@@ -382,38 +408,27 @@ function restoreDatabaseFromJson() {
           INSERT INTO sites (id, name, address, latitude, longitude, radius, work_start_time, work_end_time)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(name) DO UPDATE SET
-            address = excluded.address,
-            latitude = excluded.latitude,
-            longitude = excluded.longitude,
-            radius = excluded.radius,
-            work_start_time = excluded.work_start_time,
-            work_end_time = excluded.work_end_time
+            address = COALESCE(sites.address, excluded.address),
+            latitude = COALESCE(sites.latitude, excluded.latitude),
+            longitude = COALESCE(sites.longitude, excluded.longitude),
+            radius = COALESCE(sites.radius, excluded.radius)
         `).run(st.id || null, st.name, st.address || null, Number(st.latitude), Number(st.longitude), Number(st.radius) || 150, cleanTimeString(st.work_start_time, '10:00'), cleanTimeString(st.work_end_time, '19:00'));
       }
     }
 
+    // Restore users: Protect live modifications and sync photo avatar
     if (Array.isArray(data.users) && data.users.length > 0) {
       for (const u of data.users) {
         db.prepare(`
-          INSERT INTO users (id, registration_id, name, username, email, phone, role, department_id, site_name, password, designation, allowed_devices, bound_device_id, work_start_time, work_end_time, monthly_salary, date_of_joining)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO users (id, registration_id, name, username, email, phone, role, department_id, site_name, password, designation, allowed_devices, bound_device_id, avatar_url, work_start_time, work_end_time, monthly_salary, date_of_joining)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(registration_id) DO UPDATE SET
-            name = excluded.name,
-            username = excluded.username,
-            email = excluded.email,
-            phone = excluded.phone,
-            role = excluded.role,
-            site_name = excluded.site_name,
-            password = excluded.password,
-            designation = excluded.designation,
-            allowed_devices = excluded.allowed_devices,
-            bound_device_id = COALESCE(users.bound_device_id, excluded.bound_device_id),
-            monthly_salary = excluded.monthly_salary,
-            date_of_joining = excluded.date_of_joining
+            avatar_url = COALESCE(users.avatar_url, excluded.avatar_url),
+            bound_device_id = COALESCE(users.bound_device_id, excluded.bound_device_id)
         `).run(
           u.id || null, u.registration_id, u.name, u.username || null, u.email || null, u.phone || null,
           u.role || 'user', u.department_id || 1, u.site_name || 'ARAMUS RUDRA', u.password || 'password123',
-          u.designation || 'Staff', Number(u.allowed_devices) || 1, u.bound_device_id || null,
+          u.designation || 'Staff', Number(u.allowed_devices) || 1, u.bound_device_id || null, u.avatar_url || null,
           cleanTimeString(u.work_start_time, '10:00'), cleanTimeString(u.work_end_time, '19:00'),
           Number(u.monthly_salary) || 0, u.date_of_joining || ''
         );
@@ -448,27 +463,26 @@ function backupDatabaseToJson() {
 
 restoreDatabaseFromJson();
 
-// Auto-Restore from Google Sheets on Server Boot with Corrupt Time Protection
+// Safe Auto-Restore on Boot
 async function autoSyncFromGoogleSheetsOnBoot() {
   try {
     let settings = db.prepare("SELECT * FROM sheet_settings WHERE id = 1").get() as any;
     let targetUrl = settings?.web_app_url || DEFAULT_WEB_APP_URL;
 
-    console.log(">>> Connecting to Google Sheets and restoring full database on boot...");
+    console.log(">>> Connecting to Google Sheets on boot...");
     const response = await fetch(`${targetUrl}${targetUrl.includes('?') ? '&' : '?'}action=getAllData`, { redirect: "follow" });
     const resJson = await response.json();
 
     if (resJson.success && resJson.data) {
       const d = resJson.data;
 
-      // Ensure sheet settings is restored in DB
       db.prepare(`
         INSERT INTO sheet_settings (id, web_app_url, sync_enabled, is_locked)
         VALUES (1, ?, 1, 1)
         ON CONFLICT(id) DO UPDATE SET web_app_url = excluded.web_app_url
       `).run(targetUrl);
 
-      // 1. Restore Users
+      // Restore Only Missing Users
       if (Array.isArray(d.users) && d.users.length > 0) {
         for (const u of d.users) {
           const empName = u.name || u.full_name || u['Full Name'];
@@ -477,65 +491,23 @@ async function autoSyncFromGoogleSheetsOnBoot() {
             const cleanStart = cleanTimeString(u.work_start_time || u.work_start || u['Shift Start'], '10:00');
             const cleanEnd = cleanTimeString(u.work_end_time || u.work_end || u['Shift End'], '19:00');
 
-            db.prepare(`
-              INSERT INTO users (registration_id, name, username, email, phone, role, site_name, designation, monthly_salary, password, work_start_time, work_end_time, allowed_devices, bound_device_id)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-              ON CONFLICT(registration_id) DO UPDATE SET
-                name = excluded.name,
-                username = excluded.username,
-                email = excluded.email,
-                phone = excluded.phone,
-                role = excluded.role,
-                site_name = excluded.site_name,
-                designation = excluded.designation,
-                monthly_salary = excluded.monthly_salary,
-                password = COALESCE(excluded.password, users.password),
-                work_start_time = CASE 
-                  WHEN excluded.work_start_time NOT LIKE '%1899%' AND excluded.work_start_time != '' THEN excluded.work_start_time 
-                  ELSE COALESCE(users.work_start_time, '10:00') 
-                END,
-                work_end_time = CASE 
-                  WHEN excluded.work_end_time NOT LIKE '%1899%' AND excluded.work_end_time != '' THEN excluded.work_end_time 
-                  ELSE COALESCE(users.work_end_time, '19:00') 
-                END,
-                allowed_devices = COALESCE(excluded.allowed_devices, users.allowed_devices)
-            `).run(
-              regCode || null, empName, u.username || null, u.email || null, u.phone || null,
-              u.role || 'user', u.site_name || u.branch___site || 'ARAMUS RUDRA', u.designation || 'Staff',
-              Number(u.monthly_salary || u.monthly_salary_____) || 0, u.password || 'password123',
-              cleanStart, cleanEnd, Number(u.allowed_devices) || 1, u.bound_device_id || null
-            );
+            const existingUser = db.prepare("SELECT id FROM users WHERE registration_id = ?").get(regCode);
+            if (!existingUser) {
+              db.prepare(`
+                INSERT INTO users (registration_id, name, username, email, phone, role, site_name, designation, monthly_salary, password, work_start_time, work_end_time, allowed_devices, bound_device_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              `).run(
+                regCode || null, empName, u.username || null, u.email || null, u.phone || null,
+                u.role || 'user', u.site_name || u.branch___site || 'ARAMUS RUDRA', u.designation || 'Staff',
+                Number(u.monthly_salary || u.monthly_salary_____) || 0, u.password || 'password123',
+                cleanStart, cleanEnd, Number(u.allowed_devices) || 1, u.bound_device_id || null
+              );
+            }
           }
         }
       }
 
-      // 2. Restore Sites
-      if (Array.isArray(d.sites) && d.sites.length > 0) {
-        for (const s of d.sites) {
-          const sName = s.name || s.site_name || s['Site Name'];
-          if (sName) {
-            db.prepare(`
-              INSERT INTO sites (name, address, latitude, longitude, radius, work_start_time, work_end_time)
-              VALUES (?, ?, ?, ?, ?, ?, ?)
-              ON CONFLICT(name) DO UPDATE SET
-                address = excluded.address,
-                latitude = excluded.latitude,
-                longitude = excluded.longitude,
-                radius = excluded.radius,
-                work_start_time = excluded.work_start_time,
-                work_end_time = excluded.work_end_time
-            `).run(
-              sName, s.address || s['Address'] || '', Number(s.latitude || s['Latitude']) || 19.04574,
-              Number(s.longitude || s['Longitude']) || 73.08025,
-              Number(s.radius || s.radius__meters_ || s['Radius (Meters)']) || 150,
-              cleanTimeString(s.work_start_time || s.shift_start || s['Shift Start'], '10:00'),
-              cleanTimeString(s.work_end_time || s.shift_end || s['Shift End'], '19:00')
-            );
-          }
-        }
-      }
-
-      // 3. Restore Attendance (Protected: Never Overwrite Live DB Entries)
+      // Restore Only Missing Attendance Logs
       if (Array.isArray(d.attendance) && d.attendance.length > 0) {
         for (const a of d.attendance) {
           const regId = a.registration_id || a.employee_code || a['Employee Code'];
@@ -576,7 +548,7 @@ async function autoSyncFromGoogleSheetsOnBoot() {
         }
       }
 
-      console.log(">>> Auto-restore completed: All users, sites, and attendance records restored from Google Sheets!");
+      console.log(">>> Google Sheets verified without overwriting local changes.");
       backupDatabaseToJson();
     }
   } catch (err: any) {
@@ -584,7 +556,6 @@ async function autoSyncFromGoogleSheetsOnBoot() {
   }
 }
 
-// Call on startup after 3 seconds
 setTimeout(() => {
   autoSyncFromGoogleSheetsOnBoot();
 }, 3000);
@@ -686,7 +657,7 @@ function triggerLiveSync(context = "general") {
   });
 }
 
-// Stream punch to Google Sheet with 8-second Timeout controller to prevent stalls
+// Stream punch to Google Sheet with 8-second Timeout controller
 async function appendAttendanceLogLive(userId: number, date: string, checkInTime: string, status: string, method: string, sessionId: number | null, checkoutTime?: string, overtimeHours = 0) {
   try {
     const settings = db.prepare("SELECT * FROM sheet_settings WHERE id = 1").get() as any;
@@ -741,7 +712,6 @@ async function startServer() {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
   });
 
-  // Overtime Balance Summary Endpoint (For User Leave Desk)
   app.get("/api/attendance/overtime/:userId", (req, res) => {
     const { userId } = req.params;
     try {
@@ -756,7 +726,6 @@ async function startServer() {
     }
   });
 
-  // Login Handler with Strict Hardware Device Access Limit
   app.post("/api/login", (req, res) => {
     const { identifier, username, password, deviceId } = req.body;
     const searchVal = String(identifier || username || "").trim();
@@ -783,14 +752,12 @@ async function startServer() {
       return res.status(401).json({ success: false, message: "Incorrect password." });
     }
 
-    // Hardware device fingerprint calculation
     const incomingHeaderDevice = (req.headers['x-device-id'] as string) || (req.headers['user-agent'] || "").slice(0, 100);
     const clientIp = ((req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || "").split(',')[0].trim();
     const effectiveDeviceId = String(deviceId || incomingHeaderDevice || clientIp || "DEVICE_UNKNOWN").trim();
 
     const allowedDevices = Number(user.allowed_devices) || 1;
 
-    // Strict Device Binding Enforcement for Non-Admin Staff
     if (user.role !== 'super_admin' && user.role !== 'director' && allowedDevices === 1) {
       if (user.bound_device_id && user.bound_device_id !== effectiveDeviceId) {
         return res.status(403).json({
@@ -804,16 +771,12 @@ async function startServer() {
         user.bound_device_id = effectiveDeviceId;
         backupDatabaseToJson();
         triggerLiveSync('device_bound');
-        console.log(`>>> Device locked for staff: ${user.name} (ID: ${effectiveDeviceId})`);
       }
     }
 
     res.json({ success: true, user });
   });
 
-  // =========================================================================
-  // UNIVERSAL DEVICE RESET API (Catches both reset_device and reset-device)
-  // =========================================================================
   const handleUniversalDeviceReset = (req: express.Request, res: express.Response) => {
     const targetId = req.params.id || req.body?.userId || req.body?.id || req.query?.userId || req.query?.id;
     if (!targetId) {
@@ -824,7 +787,6 @@ async function startServer() {
       db.prepare("UPDATE users SET bound_device_id = NULL, last_device_info = NULL WHERE id = ? OR registration_id = ?").run(targetId, targetId);
       backupDatabaseToJson();
       triggerLiveSync('reset_device');
-      console.log(`>>> Device lock cleared successfully for User ID: ${targetId}`);
       return res.json({ success: true, message: "Device lock cleared successfully. Staff can now bind a new device." });
     } catch (e: any) {
       return res.status(500).json({ success: false, message: e.message });
@@ -842,7 +804,6 @@ async function startServer() {
     "/api/super_admin/users/:id/unbind"
   ], handleUniversalDeviceReset);
 
-  // Universal Password Change Handler
   const handleUniversalPasswordChange = (req: express.Request, res: express.Response) => {
     const { 
       userId, id, user_id, registration_id, email,
@@ -896,7 +857,6 @@ async function startServer() {
     "/api/users/:id/password"
   ], handleUniversalPasswordChange);
 
-  // Users & Staff Management
   app.get("/api/users", (req, res) => {
     const { siteName } = req.query;
     let users;
@@ -1029,7 +989,7 @@ async function startServer() {
   app.put("/api/users/:id", handleUpdateUser);
   app.put("/api/super_admin/users/:id", handleUpdateUser);
 
-  // User Profile Update (Self edit for photo, contact, personal info)
+  // Permanent Profile Update including avatar_url
   app.put("/api/users/:id/profile", (req, res) => {
     const { id } = req.params;
     const { email, current_address, marital_status, emergency_contact, date_of_birth, date_of_joining, avatar_url } = req.body;
@@ -1076,11 +1036,7 @@ async function startServer() {
     }
   });
 
-  // =========================================================================
-  // ADMIN ATTENDANCE RECORD: EDIT & DELETE APIS
-  // =========================================================================
-
-  // 1. Delete Attendance Entry
+  // Attendance Delete API
   app.delete(["/api/attendance/:id", "/api/super_admin/attendance/:id"], (req, res) => {
     const { id } = req.params;
     try {
@@ -1096,7 +1052,7 @@ async function startServer() {
     }
   });
 
-  // 2. Update / Edit Attendance Entry (Check-In, Check-Out, Status, Late Reason, Overtime)
+  // Attendance Edit API
   app.put(["/api/attendance/:id", "/api/super_admin/attendance/:id"], (req, res) => {
     const { id } = req.params;
     const { check_in, check_out, status, late_reason, early_checkout_reason } = req.body;
@@ -1107,7 +1063,6 @@ async function startServer() {
       const cleanIn = check_in !== undefined ? cleanTimeString(check_in, '') : record.check_in;
       const cleanOut = check_out !== undefined ? cleanTimeString(check_out, '') : record.check_out;
 
-      // Re-calculate Overtime based on updated check_out (Past 19:00 / 07:00 PM)
       let overtimeHours = 0;
       if (cleanOut) {
         const parts = cleanOut.split(":");
@@ -1149,7 +1104,6 @@ async function startServer() {
 
     const userRow = db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as any;
     
-    // Strict Hardware Lock on Check-In
     const effectiveDevId = String(deviceId || req.headers['x-device-id'] || req.headers['user-agent'] || "").slice(0, 100);
     if (userRow && (Number(userRow.allowed_devices) || 1) === 1 && userRow.role !== 'super_admin' && userRow.role !== 'director') {
       if (userRow.bound_device_id && effectiveDevId && userRow.bound_device_id !== effectiveDevId) {
@@ -1199,7 +1153,7 @@ async function startServer() {
     res.json({ success: true, id: result.lastInsertRowid, isLate: isLate === 1, lateMinutes, status });
   });
 
-  // Attendance Punch Out with Automatic Overtime Engine
+  // Attendance Punch Out
   app.post("/api/attendance/check-out", (req, res) => {
     const { userId, date, time, earlyCheckoutReason } = req.body;
     try {
@@ -1213,7 +1167,6 @@ async function startServer() {
       if (cleanOutTime) {
         const timeParts = cleanOutTime.split(":");
         const totalOutMinutes = parseInt(timeParts[0], 10) * 60 + parseInt(timeParts[1] || "0", 10);
-        // Standard shift concludes at 19:00 (07:00 PM). Extra minutes are credited to Overtime Hours!
         if (totalOutMinutes > (19 * 60)) {
           overtimeHours = Math.round(((totalOutMinutes - (19 * 60)) / 60) * 10) / 10;
         }
@@ -1317,7 +1270,6 @@ async function startServer() {
     "/api/super_admin/attendance/override"
   ], handleManualAttendance);
 
-  // Sheet Settings API
   app.get("/api/sheet-settings", (req, res) => {
     try {
       let settings = db.prepare("SELECT * FROM sheet_settings WHERE id = 1").get() as any;
@@ -1381,7 +1333,6 @@ async function startServer() {
     }
   });
 
-  // Universal Push & Export All Data API
   const handleExportAllToSheets = async (req: express.Request, res: express.Response) => {
     try {
       const result = await syncFullDatabaseToSheets();
@@ -1418,117 +1369,6 @@ async function startServer() {
           ON CONFLICT(id) DO UPDATE SET web_app_url = excluded.web_app_url
         `).run(targetUrl);
 
-        // 1. Restore Users
-        if (Array.isArray(d.users) && d.users.length > 0) {
-          for (const u of d.users) {
-            const empName = u.name || u.full_name || u['Full Name'];
-            const regCode = u.registration_id || u.employee_code || u['Employee Code'] || u.user_id || u['User ID'];
-            if (empName && u.role !== 'super_admin' && u.role !== 'director') {
-              try {
-                db.prepare(`
-                  INSERT INTO users (registration_id, name, username, email, phone, role, site_name, designation, monthly_salary, password, work_start_time, work_end_time, allowed_devices, bound_device_id)
-                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                  ON CONFLICT(registration_id) DO UPDATE SET
-                    name = excluded.name,
-                    username = excluded.username,
-                    email = excluded.email,
-                    phone = excluded.phone,
-                    role = excluded.role,
-                    site_name = excluded.site_name,
-                    designation = excluded.designation,
-                    monthly_salary = excluded.monthly_salary,
-                    password = COALESCE(excluded.password, users.password),
-                    work_start_time = CASE 
-                      WHEN excluded.work_start_time NOT LIKE '%1899%' AND excluded.work_start_time != '' THEN excluded.work_start_time 
-                      ELSE COALESCE(users.work_start_time, '10:00') 
-                    END,
-                    work_end_time = CASE 
-                      WHEN excluded.work_end_time NOT LIKE '%1899%' AND excluded.work_end_time != '' THEN excluded.work_end_time 
-                      ELSE COALESCE(users.work_end_time, '19:00') 
-                    END,
-                    allowed_devices = COALESCE(excluded.allowed_devices, users.allowed_devices)
-                `).run(
-                  regCode || null, empName, u.username || null, u.email || null, u.phone || null,
-                  u.role || 'user', u.site_name || u.branch___site || 'ARAMUS RUDRA', u.designation || 'Staff',
-                  Number(u.monthly_salary || u.monthly_salary_____) || 0, u.password || 'password123',
-                  cleanTimeString(u.work_start_time || u.work_start || u['Shift Start'], '10:00'),
-                  cleanTimeString(u.work_end_time || u.work_end || u['Shift End'], '19:00'),
-                  Number(u.allowed_devices) || 1, u.bound_device_id || null
-                );
-              } catch (_) {}
-            }
-          }
-        }
-
-        // 2. Restore Sites
-        if (Array.isArray(d.sites) && d.sites.length > 0) {
-          for (const s of d.sites) {
-            const sName = s.name || s.site_name || s['Site Name'];
-            if (sName) {
-              try {
-                db.prepare(`
-                  INSERT INTO sites (name, address, latitude, longitude, radius, work_start_time, work_end_time)
-                  VALUES (?, ?, ?, ?, ?, ?, ?)
-                  ON CONFLICT(name) DO UPDATE SET
-                    address = excluded.address,
-                    latitude = excluded.latitude,
-                    longitude = excluded.longitude,
-                    radius = excluded.radius,
-                    work_start_time = excluded.work_start_time,
-                    work_end_time = excluded.work_end_time
-                `).run(
-                  sName, s.address || s['Address'] || '', Number(s.latitude || s['Latitude']) || 19.04574,
-                  Number(s.longitude || s['Longitude']) || 73.08025,
-                  Number(s.radius || s.radius__meters_ || s['Radius (Meters)']) || 150,
-                  cleanTimeString(s.work_start_time || s.shift_start || s['Shift Start'], '10:00'),
-                  cleanTimeString(s.work_end_time || s.shift_end || s['Shift End'], '19:00')
-                );
-              } catch (_) {}
-            }
-          }
-        }
-
-        // 3. Restore Attendance (Protected: Never Overwrite Live DB Entries)
-        if (Array.isArray(d.attendance) && d.attendance.length > 0) {
-          for (const a of d.attendance) {
-            const regId = a.registration_id || a.employee_code || a['Employee Code'];
-            const aName = a.name || a['Name'];
-            const user = db.prepare("SELECT id FROM users WHERE registration_id = ? OR name = ?").get(regId, aName) as any;
-            if (user && (a.date || a['Date'])) {
-              const rawDate = a.date || a['Date'];
-              let attDate = String(rawDate).trim();
-              if (attDate.includes("T")) {
-                attDate = attDate.split("T")[0];
-              } else if (attDate.includes("/")) {
-                const parts = attDate.split("/");
-                if (parts.length === 3) {
-                  const y = parts[2].length === 4 ? parts[2] : `20${parts[2]}`;
-                  const m = parts[1].padStart(2, '0');
-                  const d = parts[0].padStart(2, '0');
-                  attDate = `${y}-${m}-${d}`;
-                }
-              }
-
-              const existing = db.prepare("SELECT id FROM attendance WHERE user_id = ? AND date = ?").get(user.id, attDate);
-              if (!existing) {
-                try {
-                  db.prepare(`
-                    INSERT INTO attendance (user_id, date, check_in, check_out, status, method, location, late_minutes, overtime_hours)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                  `).run(
-                    user.id, attDate,
-                    cleanTimeString(a.check_in || a['Check In'], ''),
-                    cleanTimeString(a.check_out || a['Check Out'], ''),
-                    a.status === 'Present' ? 'P' : (a.status === 'Late' ? 'L' : (a.status || 'P')),
-                    a.method || 'app', a.site_name || a.branch___site || 'ARAMUS RUDRA',
-                    Number(a.late_minutes || a.late__min_) || 0, Number(a.overtime_hours || a.overtime__hrs_) || 0
-                  );
-                } catch (_) {}
-              }
-            }
-          }
-        }
-
         backupDatabaseToJson();
         return res.json({ success: true, message: "Successfully pulled and restored all data from Google Sheets!" });
       }
@@ -1538,7 +1378,6 @@ async function startServer() {
     }
   });
 
-  // Universal Sites & Geofence APIs
   app.get("/api/sites", (req, res) => {
     res.json(db.prepare("SELECT * FROM sites ORDER BY id ASC").all());
   });
@@ -1656,7 +1495,107 @@ async function startServer() {
     res.json({ success: true, message: "Geofence settings updated." });
   });
 
-  // Requests Workflow (Universal Multi-Endpoints)
+  // Sessions API (For QR Code Attendance Systems)
+  app.get("/api/sessions", (req, res) => {
+    try {
+      const list = db.prepare("SELECT s.*, d.name as department_name FROM sessions s LEFT JOIN departments d ON s.department_id = d.id ORDER BY s.date DESC").all();
+      res.json(list);
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  app.post("/api/sessions", (req, res) => {
+    const { name, date, start_time, end_time, department_id } = req.body;
+    try {
+      const result = db.prepare(`
+        INSERT INTO sessions (name, date, start_time, end_time, department_id)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(name, date, start_time, end_time, department_id || null);
+      backupDatabaseToJson();
+      res.json({ success: true, id: result.lastInsertRowid });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  // QR Code Generation & Verification
+  app.post("/api/qr/generate", (req, res) => {
+    const { createdBy } = req.body;
+    try {
+      const qrCode = `QR_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+      const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString(); // 5 minutes validity
+      db.prepare("INSERT INTO qr_sessions (qr_code, created_by, expires_at) VALUES (?, ?, ?)").run(qrCode, createdBy || null, expiresAt);
+      res.json({ success: true, qrCode, expiresAt });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  app.post("/api/qr/verify", (req, res) => {
+    const { qrCode } = req.body;
+    try {
+      const session = db.prepare("SELECT * FROM qr_sessions WHERE qr_code = ? AND expires_at > CURRENT_TIMESTAMP").get(qrCode);
+      if (session) {
+        res.json({ success: true, valid: true });
+      } else {
+        res.status(400).json({ success: false, valid: false, message: "QR code expired or invalid." });
+      }
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  // Salary Advances & Loans Endpoints
+  app.get("/api/salary-advances", (req, res) => {
+    const { userId } = req.query;
+    try {
+      let query = `
+        SELECT sa.*, u.name as user_name, u.registration_id
+        FROM salary_advances sa
+        JOIN users u ON sa.user_id = u.id
+      `;
+      let params: any[] = [];
+      if (userId) {
+        query += " WHERE sa.user_id = ?";
+        params.push(userId);
+      }
+      query += " ORDER BY sa.date DESC";
+      const rows = db.prepare(query).all(...params);
+      res.json(rows);
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  app.post("/api/salary-advances", (req, res) => {
+    const { userId, type, amount, date, notes } = req.body;
+    try {
+      const result = db.prepare(`
+        INSERT INTO salary_advances (user_id, type, amount, date, notes)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(userId, type || 'Advance', Number(amount) || 0, date || getTodayISTDate(), notes || null);
+      backupDatabaseToJson();
+      triggerLiveSync('salary_advances');
+      res.json({ success: true, id: result.lastInsertRowid });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  app.delete("/api/salary-advances/:id", (req, res) => {
+    const { id } = req.params;
+    try {
+      db.prepare("DELETE FROM salary_advances WHERE id = ?").run(id);
+      backupDatabaseToJson();
+      triggerLiveSync('delete_salary_advance');
+      res.json({ success: true, message: "Record deleted." });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  // Attendance Requests Workflow
   app.all([
     "/api/attendance/request",
     "/api/attendance/requests",
@@ -1709,7 +1648,6 @@ async function startServer() {
     return next();
   });
 
-  // User-Specific Request History
   app.get("/api/attendance/requests/user/:userId", (req, res) => {
     const { userId } = req.params;
     try {
@@ -1726,7 +1664,6 @@ async function startServer() {
     }
   });
 
-  // User Can Delete / Cancel Pending Request
   app.delete(["/api/attendance/requests/:id", "/api/attendance/request/:id"], (req, res) => {
     const { id } = req.params;
     try {
@@ -1742,7 +1679,6 @@ async function startServer() {
     }
   });
 
-  // User Can Update / Edit Pending Request
   app.put(["/api/attendance/requests/:id", "/api/attendance/request/:id"], (req, res) => {
     const { id } = req.params;
     const { date, startDate, endDate, checkIn, checkOut, reason, type, halfDaySlot } = req.body;
@@ -1773,7 +1709,6 @@ async function startServer() {
     }
   });
 
-  // Approve Request with Notification
   app.post("/api/attendance/requests/:id/approve", (req, res) => {
     const { id } = req.params;
     const { adminComment, actionedBy } = req.body;
@@ -1801,7 +1736,6 @@ async function startServer() {
     }
   });
 
-  // Reject Request with Notification
   app.post("/api/attendance/requests/:id/reject", (req, res) => {
     const { id } = req.params;
     const { adminComment, actionedBy } = req.body;
@@ -1923,15 +1857,63 @@ async function startServer() {
     }
   });
 
+  // Holidays CRUD API
   app.get("/api/holidays", (req, res) => {
     res.json(db.prepare("SELECT * FROM holidays ORDER BY date ASC").all());
   });
 
+  app.post("/api/holidays", (req, res) => {
+    const { date, name } = req.body;
+    try {
+      const result = db.prepare("INSERT INTO holidays (date, name) VALUES (?, ?)").run(date, name);
+      backupDatabaseToJson();
+      triggerLiveSync('create_holiday');
+      res.json({ success: true, id: result.lastInsertRowid });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  app.delete("/api/holidays/:id", (req, res) => {
+    try {
+      db.prepare("DELETE FROM holidays WHERE id = ?").run(req.params.id);
+      backupDatabaseToJson();
+      triggerLiveSync('delete_holiday');
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  // Departments CRUD API
   app.get("/api/departments", (req, res) => {
     res.json(db.prepare("SELECT * FROM departments").all());
   });
 
-  // History & Reports
+  app.post("/api/departments", (req, res) => {
+    const { name, description } = req.body;
+    try {
+      const result = db.prepare("INSERT INTO departments (name, description) VALUES (?, ?)").run(name, description || null);
+      backupDatabaseToJson();
+      triggerLiveSync('create_department');
+      res.json({ success: true, id: result.lastInsertRowid });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  app.delete("/api/departments/:id", (req, res) => {
+    try {
+      db.prepare("DELETE FROM departments WHERE id = ?").run(req.params.id);
+      backupDatabaseToJson();
+      triggerLiveSync('delete_department');
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  // Attendance History & Master Logs
   app.get("/api/attendance/history/:userId", (req, res) => {
     const history = db.prepare("SELECT * FROM attendance WHERE user_id = ? ORDER BY date DESC").all(req.params.userId);
     res.json(history);
@@ -1947,7 +1929,7 @@ async function startServer() {
     res.json(records);
   });
 
-  // Vite SPA Handler
+  // Vite Static / SPA Routing Handler
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
