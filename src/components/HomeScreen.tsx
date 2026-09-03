@@ -553,6 +553,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
         </div>
 
+        {/* ACTIVE DAY STATUS BANNER: LEAVE, WEEKLY OFF OR HALF DAY */}
         {(isTodayWeeklyOff || isTodayLeave || isTodayHalfDay) && (
           <div className={`p-4 rounded-3xl border mb-3.5 shadow-xs animate-in fade-in duration-200 ${
             isTodayWeeklyOff
