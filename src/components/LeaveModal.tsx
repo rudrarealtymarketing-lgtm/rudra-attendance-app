@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   X, Calendar, Clock, AlertCircle, CheckCircle2, ShieldAlert, 
-  Sparkles, PlusCircle, History, Edit3, Check, RefreshCw, ChevronDown
+  Sparkles, PlusCircle, History, Edit3, Check, RefreshCw, ChevronDown, Award
 } from 'lucide-react';
 import { User, AttendanceRequest } from '../types';
 import { useTranslation } from '../utils/translations';
@@ -33,6 +33,7 @@ export const LeaveModal: React.FC<LeaveModalProps> = ({
   const [successMsg, setSuccessMsg] = useState('');
   const [correctionCount, setCorrectionCount] = useState<number>(0);
   const [weeklyOffCount, setWeeklyOffCount] = useState<number>(0);
+  const [overtimeBalanceHours, setOvertimeBalanceHours] = useState<number>(0);
   const t = useTranslation(lang);
 
   // Time selections (HH:MM)
@@ -50,7 +51,7 @@ export const LeaveModal: React.FC<LeaveModalProps> = ({
   const [editReason, setEditReason] = useState('');
   const [editLoading, setEditLoading] = useState(false);
 
-  // Fetch correction quota and weekly off quota used this month and history requests
+  // Fetch correction quota, weekly off quota and accumulated overtime balance
   const fetchUserData = async () => {
     try {
       setLoadingHistory(true);
@@ -62,7 +63,7 @@ export const LeaveModal: React.FC<LeaveModalProps> = ({
         const currentMonth = new Date().toISOString().slice(0, 7);
         const thisMonthCorrections = reqs.filter((r: any) => 
           (r.type === 'TIME_CHANGE' || r.type === 'CORRECTION') && 
-          r.date?.startsWith(currentMonth) &&
+          r.date?.startsWith(currentMonth) && 
           r.status !== 'REJECTED'
         ).length;
         setCorrectionCount(thisMonthCorrections);
@@ -73,6 +74,15 @@ export const LeaveModal: React.FC<LeaveModalProps> = ({
           r.status !== 'REJECTED'
         ).length;
         setWeeklyOffCount(thisMonthWeeklyOffs);
+      }
+
+      // Fetch live Overtime Balance for this employee
+      const otRes = await fetch(`/api/attendance/overtime/${currentUser.id}`);
+      if (otRes.ok) {
+        const otData = await otRes.json();
+        if (otData.success) {
+          setOvertimeBalanceHours(otData.totalOvertimeHours || 0);
+        }
       }
     } catch (e) {
       console.error(e);
@@ -286,6 +296,17 @@ export const LeaveModal: React.FC<LeaveModalProps> = ({
               </div>
             )}
 
+            {/* LIVE OVERTIME BALANCE DISPLAY BOX */}
+            <div className="p-3 bg-gradient-to-r from-purple-500/10 via-indigo-500/10 to-blue-500/10 border border-purple-200 dark:border-purple-800/80 rounded-2xl text-xs flex items-center justify-between">
+              <div className="flex items-center gap-2 text-purple-900 dark:text-purple-200">
+                <Award className="w-4 h-4 text-purple-600 dark:text-purple-400" />
+                <span>Accumulated Overtime Balance:</span>
+              </div>
+              <span className="px-2.5 py-1 bg-purple-600 text-white font-mono font-bold rounded-lg text-xs shadow-xs">
+                {overtimeBalanceHours} hrs
+              </span>
+            </div>
+
             {/* Compact Request Category Dropdown */}
             <div>
               <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
@@ -300,7 +321,7 @@ export const LeaveModal: React.FC<LeaveModalProps> = ({
                   <option value="TIME_CHANGE">⏱️ 1. Time Duration / Correction (Max 3/month)</option>
                   <option value="ADVANCE_LEAVE">📅 2. Advance Leave (Start to End Date)</option>
                   <option value="EMERGENCY_LEAVE">🚨 3. Emergency Leave (Urgent medical/personal)</option>
-                  <option value="HALF_DAY">🌓 4. Half Day (Shift Timing Window)</option>
+                  <option value="HALF_DAY">🌓 4. Half Day (Shift Timing Window / Compensate OT)</option>
                   <option value="WEEKLY_OFF">🏖️ 5. Weekly Off (Roster Off Day)</option>
                 </select>
                 <ChevronDown className="w-4 h-4 text-slate-400 absolute right-3 top-3.5 pointer-events-none" />
@@ -320,7 +341,7 @@ export const LeaveModal: React.FC<LeaveModalProps> = ({
               </div>
             )}
 
-            {/* Weekly Off Monthly Limit Badge (Max 4/Month for Corporate Employees) */}
+            {/* Weekly Off Monthly Limit Badge */}
             {category === 'WEEKLY_OFF' && (
               <div className="p-3 bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800/60 rounded-2xl text-xs text-indigo-850 dark:text-indigo-250 flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -333,7 +354,15 @@ export const LeaveModal: React.FC<LeaveModalProps> = ({
               </div>
             )}
 
-            {/* Date Selector for Single-Day requests (TIME CHANGE, HALF DAY, WEEKLY OFF) */}
+            {/* Half Day Note regarding Overtime compensation */}
+            {category === 'HALF_DAY' && overtimeBalanceHours > 0 && (
+              <div className="p-2.5 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 rounded-xl text-emerald-800 dark:text-emerald-200 text-xs flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>You have <strong>{overtimeBalanceHours} Overtime Hours</strong>. You can request this half-day against your accumulated extra working hours.</span>
+              </div>
+            )}
+
+            {/* Date Selector for Single-Day requests */}
             {category !== 'ADVANCE_LEAVE' && category !== 'EMERGENCY_LEAVE' && (
               <div>
                 <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
@@ -349,7 +378,7 @@ export const LeaveModal: React.FC<LeaveModalProps> = ({
               </div>
             )}
 
-            {/* Date Range Selector for ADVANCE LEAVE and EMERGENCY LEAVE (Start Date to End Date) */}
+            {/* Date Range Selector for ADVANCE LEAVE and EMERGENCY LEAVE */}
             {(category === 'ADVANCE_LEAVE' || category === 'EMERGENCY_LEAVE') && (
               <div className="bg-slate-50 dark:bg-slate-800/60 p-3 rounded-2xl border border-slate-200 dark:border-slate-700 space-y-2.5">
                 <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
@@ -417,7 +446,7 @@ export const LeaveModal: React.FC<LeaveModalProps> = ({
               </div>
             )}
 
-            {/* Time Selection for HALF DAY (Start & End Time) */}
+            {/* Time Selection for HALF DAY */}
             {category === 'HALF_DAY' && (
               <div className="bg-slate-50 dark:bg-slate-800/60 p-3 rounded-2xl border border-slate-200 dark:border-slate-700 space-y-2">
                 <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
@@ -445,7 +474,6 @@ export const LeaveModal: React.FC<LeaveModalProps> = ({
                   </div>
                 </div>
 
-                {/* Preset Quick Chips */}
                 <div className="flex gap-1.5 pt-1">
                   <button
                     type="button"
@@ -474,7 +502,7 @@ export const LeaveModal: React.FC<LeaveModalProps> = ({
                 rows={2}
                 value={reason}
                 onChange={(e) => setReason(e.target.value)}
-                placeholder="e.g. Site inspection, Planned family trip, Medical appointment..."
+                placeholder="e.g. Site inspection, Planned family trip, Compensating overtime hours..."
                 required
                 className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
@@ -557,7 +585,6 @@ export const LeaveModal: React.FC<LeaveModalProps> = ({
                       </span>
                     </div>
 
-                    {/* Applied Date & Time */}
                     <div className="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400">
                       <Clock className="w-3.5 h-3.5 text-blue-500 shrink-0" />
                       <span>Applied on: <strong className="text-slate-700 dark:text-slate-300 font-semibold">{formatRequestDateTime(req.created_at)}</strong></span>
@@ -583,7 +610,6 @@ export const LeaveModal: React.FC<LeaveModalProps> = ({
                         </p>
                       )}
 
-                      {/* Approval / Rejection Decision Details */}
                       {!isPending && (
                         <div className={`mt-2 pt-2 border-t text-[11px] space-y-1 ${
                           isApproved ? 'border-emerald-100 dark:border-emerald-950/60' : 'border-rose-100 dark:border-rose-950/60'
@@ -608,7 +634,6 @@ export const LeaveModal: React.FC<LeaveModalProps> = ({
                       )}
                     </div>
 
-                    {/* Reschedule Button if Pending */}
                     {isPending && (
                       <div className="flex justify-end pt-1">
                         <button
