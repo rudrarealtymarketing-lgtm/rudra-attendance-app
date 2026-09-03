@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   User as UserIcon, Mail, Phone, MapPin, Building2, Shield, 
   QrCode, LogOut, Camera, CheckCircle2, 
   AlertCircle, Smartphone, Lock, Save, Moon, Sun, Languages, Printer, Calendar,
-  KeyRound
+  KeyRound, Crop, ZoomIn, ZoomOut, Check, X
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { User } from '../types';
@@ -43,6 +43,15 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const t = useTranslation(lang);
 
+  // --- PHOTO CROP & FACE POSITIONING STATES ---
+  const [cropModalOpen, setCropModalOpen] = useState(false);
+  const [rawImageSrc, setRawImageSrc] = useState<string | null>(null);
+  const [zoomLevel, setZoomLevel] = useState(1);
+  const [panPosition, setPanPosition] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const imageRef = useRef<HTMLImageElement | null>(null);
+
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
@@ -78,18 +87,82 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
     }
   };
 
-  const handleAvatarUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleAvatarSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       const reader = new FileReader();
       reader.onloadend = () => {
-        setAvatarUrl(reader.result as string);
+        setRawImageSrc(reader.result as string);
+        setZoomLevel(1);
+        setPanPosition({ x: 0, y: 0 });
+        setCropModalOpen(true);
       };
       reader.readAsDataURL(file);
     }
   };
 
-  // Robust ID Card Print Handler (supports both popup isolated window and browser print)
+  // Perform canvas crop for clean face portrait
+  const handleApplyFaceCrop = () => {
+    if (!rawImageSrc) return;
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.src = rawImageSrc;
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      const size = 320; // 320x320 clean square ID resolution
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+
+      // Fill white background
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, size, size);
+
+      ctx.save();
+      ctx.translate(size / 2, size / 2);
+      ctx.translate(panPosition.x, panPosition.y);
+      ctx.scale(zoomLevel, zoomLevel);
+
+      const minDim = Math.min(img.width, img.height);
+      const drawWidth = (img.width / minDim) * size;
+      const drawHeight = (img.height / minDim) * size;
+
+      ctx.drawImage(img, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
+      ctx.restore();
+
+      const croppedBase64 = canvas.toDataURL("image/jpeg", 0.9);
+      setAvatarUrl(croppedBase64);
+      setCropModalOpen(false);
+      setRawImageSrc(null);
+    };
+  };
+
+  // Drag handlers for portrait positioning inside circle
+  const handleMouseDown = (e: React.MouseEvent) => {
+    setIsDragging(true);
+    setDragStart({ x: e.clientX - panPosition.x, y: e.clientY - panPosition.y });
+  };
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!isDragging) return;
+    setPanPosition({ x: e.clientX - dragStart.x, y: e.clientY - dragStart.y });
+  };
+  const handleMouseUp = () => setIsDragging(false);
+
+  // Touch handlers for mobile portrait crop
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 1) {
+      setIsDragging(true);
+      setDragStart({ x: e.touches[0].clientX - panPosition.x, y: e.touches[0].clientY - panPosition.y });
+    }
+  };
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (!isDragging || e.touches.length !== 1) return;
+    setPanPosition({ x: e.touches[0].clientX - dragStart.x, y: e.touches[0].clientY - dragStart.y });
+  };
+  const handleTouchEnd = () => setIsDragging(false);
+
+  // Print ID Badge
   const handlePrintCard = () => {
     const printContent = document.getElementById('printable-id-card');
     if (!printContent) {
@@ -105,164 +178,42 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           <head>
             <title>ID Card - ${currentUser.name}</title>
             <style>
-              body {
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-                background: #f8fafc;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                min-height: 100vh;
-                margin: 0;
-                padding: 20px;
-                box-sizing: border-box;
-              }
-              .id-card-wrapper {
-                background: white;
-                border: 2px solid #0f172a;
-                border-radius: 20px;
-                padding: 24px;
-                max-width: 320px;
-                width: 100%;
-                text-align: center;
-                box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-              }
-              .company-header {
-                font-weight: 800;
-                font-size: 16px;
-                color: #0f172a;
-                margin-bottom: 2px;
-              }
-              .badge-sub {
-                font-size: 11px;
-                color: #2563eb;
-                font-weight: 700;
-                text-transform: uppercase;
-                letter-spacing: 1px;
-                margin-bottom: 12px;
-              }
-              .avatar-img {
-                width: 90px;
-                height: 90px;
-                border-radius: 16px;
-                object-fit: cover;
-                margin: 0 auto 10px;
-                display: block;
-                border: 2px solid #e2e8f0;
-              }
-              .avatar-placeholder {
-                width: 90px;
-                height: 90px;
-                border-radius: 16px;
-                background: #2563eb;
-                color: white;
-                font-size: 32px;
-                font-weight: bold;
-                line-height: 90px;
-                margin: 0 auto 10px;
-              }
-              .emp-name {
-                font-size: 16px;
-                font-weight: bold;
-                color: #0f172a;
-                margin: 0;
-              }
-              .emp-role {
-                font-size: 13px;
-                color: #2563eb;
-                font-weight: 600;
-                margin: 2px 0 0;
-              }
-              .emp-id {
-                font-size: 12px;
-                font-family: monospace;
-                color: #64748b;
-                margin: 2px 0 12px;
-              }
-              .details-table {
-                width: 100%;
-                background: #f1f5f9;
-                border-radius: 12px;
-                padding: 10px 12px;
-                font-size: 11px;
-                text-align: left;
-                margin-bottom: 14px;
-                box-sizing: border-box;
-              }
-              .details-row {
-                display: flex;
-                justify-content: space-between;
-                padding: 3px 0;
-              }
-              .details-label {
-                color: #64748b;
-              }
-              .details-val {
-                font-weight: 600;
-                color: #0f172a;
-              }
-              .qr-box {
-                margin: 10px auto;
-                display: flex;
-                justify-content: center;
-              }
-              .card-footer {
-                font-size: 9px;
-                color: #94a3b8;
-                margin-top: 10px;
-              }
-              @media print {
-                body { background: transparent; padding: 0; }
-                .id-card-wrapper { box-shadow: none; }
-              }
+              body { font-family: -apple-system, sans-serif; background: #f8fafc; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; }
+              .id-card-wrapper { background: white; border: 2px solid #0f172a; border-radius: 20px; padding: 24px; max-width: 320px; width: 100%; text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+              .company-header { font-weight: 800; font-size: 16px; color: #0f172a; margin-bottom: 2px; }
+              .badge-sub { font-size: 11px; color: #2563eb; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; }
+              .avatar-img { width: 90px; height: 90px; border-radius: 16px; object-fit: cover; margin: 0 auto 10px; display: block; border: 2px solid #e2e8f0; }
+              .avatar-placeholder { width: 90px; height: 90px; border-radius: 16px; background: #2563eb; color: white; font-size: 32px; font-weight: bold; line-height: 90px; margin: 0 auto 10px; }
+              .emp-name { font-size: 16px; font-weight: bold; color: #0f172a; margin: 0; }
+              .emp-role { font-size: 13px; color: #2563eb; font-weight: 600; margin: 2px 0 0; }
+              .emp-id { font-size: 12px; font-family: monospace; color: #64748b; margin: 2px 0 12px; }
+              .details-table { width: 100%; background: #f1f5f9; border-radius: 12px; padding: 10px 12px; font-size: 11px; text-align: left; margin-bottom: 14px; box-sizing: border-box; }
+              .details-row { display: flex; justify-content: space-between; padding: 3px 0; }
+              .details-label { color: #64748b; }
+              .details-val { font-weight: 600; color: #0f172a; }
+              .qr-box { margin: 10px auto; display: flex; justify-content: center; }
+              .card-footer { font-size: 9px; color: #94a3b8; margin-top: 10px; }
+              @media print { body { background: transparent; padding: 0; } .id-card-wrapper { box-shadow: none; } }
             </style>
           </head>
           <body>
             <div class="id-card-wrapper">
               <div class="company-header">RUDRA INFRA WORLD</div>
               <div class="badge-sub">Official Corporate Staff ID</div>
-
               ${avatarUrl ? `<img src="${avatarUrl}" class="avatar-img" />` : `<div class="avatar-placeholder">${currentUser.name.charAt(0).toUpperCase()}</div>`}
-
               <div class="emp-name">${currentUser.name}</div>
               <div class="emp-role">${currentUser.designation || 'Staff Member'}</div>
               <div class="emp-id">${currentUser.registration_id || 'EMP-ID'}</div>
-
               <div class="details-table">
-                <div class="details-row">
-                  <span class="details-label">Site / Branch:</span>
-                  <span class="details-val">${currentUser.site_name || 'Headquarters'}</span>
-                </div>
-                ${currentUser.date_of_birth ? `
-                <div class="details-row">
-                  <span class="details-label">Date of Birth:</span>
-                  <span class="details-val">${currentUser.date_of_birth}</span>
-                </div>` : ''}
-                ${currentUser.date_of_joining ? `
-                <div class="details-row">
-                  <span class="details-label">Joining Date:</span>
-                  <span class="details-val">${currentUser.date_of_joining}</span>
-                </div>` : ''}
-                <div class="details-row">
-                  <span class="details-label">Status:</span>
-                  <span class="details-val" style="color: #16a34a;">Active & Verified</span>
-                </div>
+                <div class="details-row"><span class="details-label">Site / Branch:</span><span class="details-val">${currentUser.site_name || 'Headquarters'}</span></div>
+                ${currentUser.date_of_birth ? `<div class="details-row"><span class="details-label">DOB:</span><span class="details-val">${currentUser.date_of_birth}</span></div>` : ''}
+                ${currentUser.date_of_joining ? `<div class="details-row"><span class="details-label">DOJ:</span><span class="details-val">${currentUser.date_of_joining}</span></div>` : ''}
+                <div class="details-row"><span class="details-label">Status:</span><span class="details-val" style="color:#16a34a;">Active & Verified</span></div>
               </div>
-
-              <div class="qr-box">
-                ${printContent.querySelector('.qr-container')?.innerHTML || ''}
-              </div>
-
-              <div class="card-footer">
-                Authorized Official Staff Identity Card • Rudra Infra World
-              </div>
+              <div class="qr-box">${printContent.querySelector('.qr-container')?.innerHTML || ''}</div>
+              <div class="card-footer">Authorized Official Staff Identity Card • Rudra Infra World</div>
             </div>
-            <script>
-              window.onload = function() {
-                setTimeout(function() {
-                  window.print();
-                }, 300);
-              };
-            </script>
+            <script>window.onload = function() { setTimeout(function() { window.print(); }, 300); };</script>
           </body>
         </html>
       `);
@@ -302,7 +253,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           </h4>
           
           <div className="grid grid-cols-2 gap-2.5">
-            {/* Dark / Light Mode Switch */}
             <button
               id="toggle-dark-mode-btn"
               onClick={onToggleTheme}
@@ -321,7 +271,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               <span className="text-[10px] text-blue-600 dark:text-blue-400 font-bold">Toggle</span>
             </button>
 
-            {/* Language Switch (English / Hindi) */}
             <button
               id="toggle-language-btn"
               onClick={onToggleLang}
@@ -338,10 +287,9 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           </div>
         </div>
 
-        {/* Profile Card Header */}
+        {/* Profile Card Header with Crop Activation */}
         <div className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-3xl p-4 shadow-xs relative overflow-hidden">
           <div className="flex items-center gap-3.5">
-            {/* Avatar with Upload trigger */}
             <div className="relative group">
               <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white font-bold text-xl overflow-hidden border-2 border-slate-100 dark:border-slate-700 shadow-md">
                 {avatarUrl ? (
@@ -353,7 +301,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               <label 
                 htmlFor="avatar-upload-input"
                 className="absolute -bottom-1 -right-1 w-6 h-6 bg-blue-600 hover:bg-blue-700 rounded-full flex items-center justify-center text-white cursor-pointer shadow-md border-2 border-white dark:border-slate-900"
-                title="Upload Profile Photo"
+                title="Upload & Crop Face Photo"
               >
                 <Camera className="w-3 h-3" />
               </label>
@@ -361,9 +309,9 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 id="avatar-upload-input" 
                 type="file" 
                 accept="image/*" 
-                onChange={handleAvatarUpload} 
+                onChange={handleAvatarSelect} 
                 className="hidden" 
-              />
+              /&gt;
             </div>
 
             <div className="flex-1 min-w-0">
@@ -572,6 +520,93 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
 
       </div>
 
+      {/* INTERACTIVE FACE CROP & POSITION MODAL */}
+      {cropModalOpen && rawImageSrc && (
+        <div className="fixed inset-0 z-60 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-5 max-w-xs w-full shadow-2xl space-y-3.5 text-center">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2.5">
+              <div className="flex items-center gap-2 text-slate-800 dark:text-white font-bold text-sm">
+                <Crop className="w-4 h-4 text-blue-600" />
+                <span>Adjust Profile Face Photo</span>
+              </div>
+              <button 
+                onClick={() => { setCropModalOpen(false); setRawImageSrc(null); }}
+                className="text-slate-400 hover:text-slate-600"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-[11px] text-slate-500 leading-tight">
+              Drag the photo to center your face inside the circle, and use zoom slider below:
+            </p>
+
+            {/* Circular Viewport & Drag Area */}
+            <div 
+              className="relative w-56 h-56 mx-auto rounded-full overflow-hidden bg-slate-950 border-4 border-blue-600 shadow-inner cursor-grab active:cursor-grabbing select-none"
+              onMouseDown={handleMouseDown}
+              onMouseMove={handleMouseMove}
+              onMouseUp={handleMouseUp}
+              onTouchStart={handleTouchStart}
+              onTouchMove={handleTouchMove}
+              onTouchEnd={handleTouchEnd}
+            >
+              <div 
+                className="w-full h-full flex items-center justify-center pointer-events-none"
+                style={{
+                  transform: `translate(${panPosition.x}px, ${panPosition.y}px) scale(${zoomLevel})`,
+                  transition: isDragging ? 'none' : 'transform 0.1s ease-out'
+                }}
+              >
+                <img 
+                  ref={imageRef} 
+                  src={rawImageSrc} 
+                  alt="Crop Preview" 
+                  className="max-w-none max-h-none w-56 h-56 object-contain" 
+                  draggable={false} 
+                />
+              </div>
+            </div>
+
+            {/* Zoom Slider */}
+            <div className="space-y-1 pt-1">
+              <div className="flex items-center justify-between text-[11px] text-slate-500 font-semibold">
+                <span className="flex items-center gap-1"><ZoomOut className="w-3.5 h-3.5" /> Zoom</span>
+                <span>{Math.round(zoomLevel * 100)}%</span>
+              </div>
+              <input 
+                type="range" 
+                min={0.8} 
+                max={3} 
+                step={0.05} 
+                value={zoomLevel} 
+                onChange={(e) => setZoomLevel(parseFloat(e.target.value))}
+                className="w-full accent-blue-600"
+              />
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => { setCropModalOpen(false); setRawImageSrc(null); }}
+                className="w-1/2 py-2 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-xl text-xs font-semibold"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleApplyFaceCrop}
+                className="w-1/2 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-md flex items-center justify-center gap-1"
+              >
+                <Check className="w-3.5 h-3.5" />
+                <span>Apply Crop</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Corporate Real Estate Digital ID Card Modal */}
       {showQrModal && (
         <div className="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4">
@@ -579,7 +614,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             id="printable-id-card"
             className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-5 max-w-xs w-full shadow-2xl text-center relative font-sans"
           >
-            {/* Top Company Badge */}
             <div className="flex items-center justify-center gap-2 mb-2.5">
               <div className="w-8 h-8 bg-gradient-to-tr from-blue-600 to-indigo-600 text-white rounded-xl flex items-center justify-center shadow-xs">
                 <Building2 className="w-4 h-4" />
@@ -590,7 +624,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               </div>
             </div>
 
-            {/* Photo & Name */}
             <div className="my-2.5">
               <div className="w-18 h-18 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white font-bold text-2xl overflow-hidden mx-auto border-2 border-slate-200 dark:border-slate-700 shadow-md">
                 {avatarUrl ? (
@@ -604,7 +637,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               <p className="text-[11px] font-mono text-slate-500 dark:text-slate-400 mt-0.5">{currentUser.registration_id || 'EMP-ID'}</p>
             </div>
 
-            {/* Real Estate ID Details (including DOB and DOJ) */}
             <div className="bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 rounded-2xl p-2.5 text-xs text-left space-y-1 mb-3">
               <div className="flex justify-between text-[10px]">
                 <span className="text-slate-400">Site / Branch:</span>
@@ -628,7 +660,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               </div>
             </div>
 
-            {/* QR Code */}
             <div className="qr-container bg-white p-2.5 rounded-2xl w-fit mx-auto my-2 border border-slate-200 shadow-xs">
               <QRCodeSVG
                 value={`STAFFSYNC:${currentUser.registration_id || currentUser.id}:${currentUser.name}:${currentUser.site_name || 'HQ'}`}
@@ -655,7 +686,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 Close Badge
               </button>
             </div>
-
           </div>
         </div>
       )}
