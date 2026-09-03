@@ -35,7 +35,11 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   const [emergencyContact, setEmergencyContact] = useState(currentUser.emergency_contact || '');
   const [dateOfJoining, setDateOfJoining] = useState(currentUser.date_of_joining || '');
   const [dateOfBirth, setDateOfBirth] = useState(currentUser.date_of_birth || '');
-  const [avatarUrl, setAvatarUrl] = useState(currentUser.avatar_url || '');
+  
+  // Persistent avatar state from user or localStorage
+  const [avatarUrl, setAvatarUrl] = useState<string>(() => {
+    return currentUser.avatar_url || localStorage.getItem(`avatar_${currentUser.id}`) || '';
+  });
   
   const [saving, setSaving] = useState(false);
   const [successMsg, setSuccessMsg] = useState('');
@@ -43,14 +47,20 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const t = useTranslation(lang);
 
-  // --- PHOTO CROP & FACE POSITIONING STATES ---
+  // --- INTERACTIVE FACE CROP MODAL STATES ---
   const [cropModalOpen, setCropModalOpen] = useState(false);
   const [rawImageSrc, setRawImageSrc] = useState<string | null>(null);
   const [zoomLevel, setZoomLevel] = useState(1);
   const [panPosition, setPanPosition] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
-  const imageRef = useRef<HTMLImageElement | null>(null);
+
+  // Update avatar state if currentUser prop changes
+  useEffect(() => {
+    if (currentUser.avatar_url) {
+      setAvatarUrl(currentUser.avatar_url);
+    }
+  }, [currentUser.avatar_url]);
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -75,7 +85,10 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
       const data = await res.json();
       if (res.ok && data.success) {
         setSuccessMsg('Profile updated successfully.');
-        onUpdateUser(data.user);
+        localStorage.setItem(`avatar_${currentUser.id}`, avatarUrl);
+        const updated = { ...currentUser, ...data.user, avatar_url: avatarUrl };
+        onUpdateUser(updated);
+        localStorage.setItem('currentUser', JSON.stringify(updated));
         setTimeout(() => setSuccessMsg(''), 3000);
       } else {
         alert(data.message || 'Failed to update profile');
@@ -87,35 +100,39 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
     }
   };
 
+  // Instant trigger when user picks an image
   const handleAvatarSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       const reader = new FileReader();
-      reader.onloadend = () => {
-        setRawImageSrc(reader.result as string);
-        setZoomLevel(1);
-        setPanPosition({ x: 0, y: 0 });
-        setCropModalOpen(true);
+      reader.onload = (event) => {
+        const result = event.target?.result as string;
+        if (result) {
+          setRawImageSrc(result);
+          setZoomLevel(1);
+          setPanPosition({ x: 0, y: 0 });
+          setCropModalOpen(true);
+        }
       };
       reader.readAsDataURL(file);
     }
+    e.target.value = ''; // Reset input to allow re-selecting same photo
   };
 
-  // Perform canvas crop for clean face portrait
-  const handleApplyFaceCrop = () => {
+  // Apply Face Crop: Render square canvas to Base64
+  const handleApplyFaceCrop = async () => {
     if (!rawImageSrc) return;
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.src = rawImageSrc;
-    img.onload = () => {
+    img.onload = async () => {
       const canvas = document.createElement("canvas");
-      const size = 320; // 320x320 clean square ID resolution
+      const size = 320;
       canvas.width = size;
       canvas.height = size;
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
 
-      // Fill white background
       ctx.fillStyle = "#ffffff";
       ctx.fillRect(0, 0, size, size);
 
@@ -131,14 +148,30 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
       ctx.drawImage(img, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
       ctx.restore();
 
-      const croppedBase64 = canvas.toDataURL("image/jpeg", 0.9);
+      const croppedBase64 = canvas.toDataURL("image/jpeg", 0.88);
       setAvatarUrl(croppedBase64);
+      localStorage.setItem(`avatar_${currentUser.id}`, croppedBase64);
       setCropModalOpen(false);
       setRawImageSrc(null);
+
+      // Auto-persist directly to database immediately
+      try {
+        const res = await fetch(`/api/users/${currentUser.id}/profile`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ avatar_url: croppedBase64 })
+        });
+        if (res.ok) {
+          const uData = await res.json();
+          const merged = { ...currentUser, avatar_url: croppedBase64 };
+          onUpdateUser(merged);
+          localStorage.setItem('currentUser', JSON.stringify(merged));
+        }
+      } catch (_) {}
     };
   };
 
-  // Drag handlers for portrait positioning inside circle
+  // Mouse drag
   const handleMouseDown = (e: React.MouseEvent) => {
     setIsDragging(true);
     setDragStart({ x: e.clientX - panPosition.x, y: e.clientY - panPosition.y });
@@ -149,7 +182,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   };
   const handleMouseUp = () => setIsDragging(false);
 
-  // Touch handlers for mobile portrait crop
+  // Touch drag for mobile
   const handleTouchStart = (e: React.TouchEvent) => {
     if (e.touches.length === 1) {
       setIsDragging(true);
@@ -162,7 +195,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   };
   const handleTouchEnd = () => setIsDragging(false);
 
-  // Print ID Badge
   const handlePrintCard = () => {
     const printContent = document.getElementById('printable-id-card');
     if (!printContent) {
@@ -235,7 +267,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             <p className="text-xs text-slate-500 dark:text-slate-400">Settings & Digital Credentials</p>
           </div>
           
-          {/* Digital ID Button */}
           <button
             id="view-digital-id-card-btn"
             onClick={() => setShowQrModal(true)}
@@ -246,7 +277,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           </button>
         </div>
 
-        {/* Quick App Preferences Card (Theme & Language) */}
+        {/* Quick App Preferences Card */}
         <div className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-3xl p-4 shadow-xs">
           <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">
             App Customization & Preferences
@@ -287,7 +318,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           </div>
         </div>
 
-        {/* Profile Card Header with Crop Activation */}
+        {/* Profile Card Header with Upload & Face Crop */}
         <div className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-3xl p-4 shadow-xs relative overflow-hidden">
           <div className="flex items-center gap-3.5">
             <div className="relative group">
@@ -299,19 +330,19 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 )}
               </div>
               <label 
-                htmlFor="avatar-upload-input"
+                htmlFor="avatar-upload-file-input"
                 className="absolute -bottom-1 -right-1 w-6 h-6 bg-blue-600 hover:bg-blue-700 rounded-full flex items-center justify-center text-white cursor-pointer shadow-md border-2 border-white dark:border-slate-900"
-                title="Upload & Crop Face Photo"
+                title="Choose Photo to Crop"
               >
                 <Camera className="w-3 h-3" />
               </label>
               <input 
-                id="avatar-upload-input" 
+                id="avatar-upload-file-input" 
                 type="file" 
                 accept="image/*" 
                 onChange={handleAvatarSelect} 
                 className="hidden" 
-              /&gt;
+              />
             </div>
 
             <div className="flex-1 min-w-0">
@@ -339,7 +370,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             )}
           </div>
 
-          {/* Read-Only User ID */}
           <div>
             <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
               Employee ID (Fixed)
@@ -352,7 +382,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             />
           </div>
 
-          {/* Email */}
           <div>
             <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
               Official Email
@@ -367,7 +396,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             />
           </div>
 
-          {/* Birth Date & Joining Date */}
           <div className="grid grid-cols-2 gap-2.5">
             <div>
               <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
@@ -396,7 +424,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             </div>
           </div>
 
-          {/* Current Address */}
           <div>
             <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
               Current Residential Address
@@ -411,7 +438,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             />
           </div>
 
-          {/* Marital Status & Emergency Contact */}
           <div className="grid grid-cols-2 gap-2.5">
             <div>
               <label className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
@@ -444,7 +470,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             </div>
           </div>
 
-          {/* Save Profile Button */}
           <button
             id="save-profile-btn"
             type="submit"
@@ -462,7 +487,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           </button>
         </form>
 
-        {/* Security & Account Password Card */}
+        {/* Security Card */}
         <div className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-3xl p-4 shadow-xs space-y-3">
           <div className="flex items-center justify-between">
             <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 flex items-center gap-2">
@@ -473,12 +498,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               {lang === 'hi' ? 'सुरक्षित' : 'Protected'}
             </span>
           </div>
-          
-          <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
-            {lang === 'hi' 
-              ? 'अपने खाते की सुरक्षा बनाए रखने के लिए समय-समय पर अपना पासवर्ड अपडेट करें।'
-              : 'Update your sign-in password anytime to keep your management and timesheet account secure.'}
-          </p>
 
           <button
             type="button"
@@ -490,7 +509,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           </button>
         </div>
 
-        {/* Device Binding & Hardware Security Status */}
+        {/* Device Lock Card */}
         <div className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-3xl p-4 shadow-xs space-y-2">
           <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 flex items-center gap-2">
             <Shield className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
@@ -520,30 +539,32 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
 
       </div>
 
-      {/* INTERACTIVE FACE CROP & POSITION MODAL */}
+      {/* ================= HIGH-PRIORITY FACE CROP MODAL ================= */}
       {cropModalOpen && rawImageSrc && (
-        <div className="fixed inset-0 z-60 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-5 max-w-xs w-full shadow-2xl space-y-3.5 text-center">
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2.5">
+        <div className="fixed inset-0 z-[100] bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-5 max-w-xs w-full shadow-2xl space-y-3 text-center">
+            
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2">
               <div className="flex items-center gap-2 text-slate-800 dark:text-white font-bold text-sm">
                 <Crop className="w-4 h-4 text-blue-600" />
-                <span>Adjust Profile Face Photo</span>
+                <span>Crop Face for ID Card</span>
               </div>
               <button 
+                type="button"
                 onClick={() => { setCropModalOpen(false); setRawImageSrc(null); }}
-                className="text-slate-400 hover:text-slate-600"
+                className="text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <p className="text-[11px] text-slate-500 leading-tight">
-              Drag the photo to center your face inside the circle, and use zoom slider below:
+            <p className="text-[11px] text-slate-500">
+              Drag photo to position your face inside the circle:
             </p>
 
-            {/* Circular Viewport & Drag Area */}
+            {/* Circular Crop Box */}
             <div 
-              className="relative w-56 h-56 mx-auto rounded-full overflow-hidden bg-slate-950 border-4 border-blue-600 shadow-inner cursor-grab active:cursor-grabbing select-none"
+              className="relative w-52 h-52 mx-auto rounded-full overflow-hidden bg-slate-950 border-4 border-blue-600 shadow-inner cursor-grab active:cursor-grabbing select-none"
               onMouseDown={handleMouseDown}
               onMouseMove={handleMouseMove}
               onMouseUp={handleMouseUp}
@@ -555,21 +576,20 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 className="w-full h-full flex items-center justify-center pointer-events-none"
                 style={{
                   transform: `translate(${panPosition.x}px, ${panPosition.y}px) scale(${zoomLevel})`,
-                  transition: isDragging ? 'none' : 'transform 0.1s ease-out'
+                  transition: isDragging ? 'none' : 'transform 0.08s ease-out'
                 }}
               >
                 <img 
-                  ref={imageRef} 
                   src={rawImageSrc} 
-                  alt="Crop Preview" 
-                  className="max-w-none max-h-none w-56 h-56 object-contain" 
+                  alt="Face Preview" 
+                  className="max-w-none max-h-none w-52 h-52 object-contain pointer-events-none" 
                   draggable={false} 
                 />
               </div>
             </div>
 
             {/* Zoom Slider */}
-            <div className="space-y-1 pt-1">
+            <div className="space-y-1">
               <div className="flex items-center justify-between text-[11px] text-slate-500 font-semibold">
                 <span className="flex items-center gap-1"><ZoomOut className="w-3.5 h-3.5" /> Zoom</span>
                 <span>{Math.round(zoomLevel * 100)}%</span>
@@ -581,28 +601,28 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 step={0.05} 
                 value={zoomLevel} 
                 onChange={(e) => setZoomLevel(parseFloat(e.target.value))}
-                className="w-full accent-blue-600"
+                className="w-full accent-blue-600 cursor-pointer"
               />
             </div>
 
-            {/* Action Buttons */}
-            <div className="flex gap-2 pt-2">
+            <div className="flex gap-2 pt-1">
               <button
                 type="button"
                 onClick={() => { setCropModalOpen(false); setRawImageSrc(null); }}
-                className="w-1/2 py-2 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-xl text-xs font-semibold"
+                className="w-1/2 py-2 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-xl text-xs font-semibold cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={handleApplyFaceCrop}
-                className="w-1/2 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-md flex items-center justify-center gap-1"
+                className="w-1/2 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-md flex items-center justify-center gap-1 cursor-pointer"
               >
                 <Check className="w-3.5 h-3.5" />
                 <span>Apply Crop</span>
               </button>
             </div>
+
           </div>
         </div>
       )}
