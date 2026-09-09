@@ -341,6 +341,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           userId: currentUser.id,
+          registration_id: currentUser.registration_id,
           date: todayDateStr,
           time: timeStr,
           location: {
@@ -425,6 +426,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           userId: currentUser.id,
+          registration_id: currentUser.registration_id,
           date: todayDateStr,
           time: timeStr,
           earlyCheckoutReason: finalReason,
