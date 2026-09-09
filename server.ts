@@ -26,7 +26,7 @@ try {
 }
 console.log("Database initialized with WAL mode");
 
-// Always compute strictly against Indian Standard Time (UTC + 5:30)
+// Always strictly compute against Indian Standard Time (UTC + 5:30)
 function getTodayISTDate(): string {
   const now = new Date();
   const istOffset = 5.5 * 60 * 60 * 1000;
@@ -56,7 +56,6 @@ const runMigration = (name: string, sql: string) => {
 };
 
 console.log("Running initial table creation...");
-// Initialize Master Database Tables
 db.exec(`
   CREATE TABLE IF NOT EXISTS departments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,7 +65,7 @@ db.exec(`
 
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    registration_id TEXT UNIQUE,
+    registration_id TEXT UNIQUE NOT NULL,
     name TEXT NOT NULL,
     username TEXT,
     email TEXT UNIQUE,
@@ -112,6 +111,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS attendance (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
+    registration_id TEXT,
     session_id INTEGER,
     date TEXT NOT NULL,
     check_in TEXT,
@@ -184,6 +184,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS attendance_requests (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
+    registration_id TEXT,
     date TEXT NOT NULL,
     start_date TEXT,
     end_date TEXT,
@@ -204,6 +205,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS salary_advances (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
+    registration_id TEXT,
     type TEXT NOT NULL,
     amount REAL NOT NULL,
     date TEXT NOT NULL,
@@ -215,6 +217,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS notifications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER,
+    registration_id TEXT,
     title TEXT NOT NULL,
     message TEXT NOT NULL,
     type TEXT DEFAULT 'info',
@@ -230,7 +233,7 @@ db.exec(`
   );
 `);
 
-// Table migrations verification
+// Migrations verification
 const userTableInfo = db.prepare("PRAGMA table_info(users)").all() as any[];
 if (!userTableInfo.some(col => col.name === 'username')) runMigration("add username", "ALTER TABLE users ADD COLUMN username TEXT");
 if (!userTableInfo.some(col => col.name === 'work_start_time')) runMigration("add work_start_time", "ALTER TABLE users ADD COLUMN work_start_time TEXT DEFAULT '10:00'");
@@ -261,16 +264,10 @@ if (!siteTableInfo.some(col => col.name === 'address')) runMigration("add addres
 if (!siteTableInfo.some(col => col.name === 'work_start_time')) runMigration("add work_start_time to sites", "ALTER TABLE sites ADD COLUMN work_start_time TEXT DEFAULT '10:00'");
 if (!siteTableInfo.some(col => col.name === 'work_end_time')) runMigration("add work_end_time to sites", "ALTER TABLE sites ADD COLUMN work_end_time TEXT DEFAULT '19:00'");
 
-const reqTableInfo = db.prepare("PRAGMA table_info(attendance_requests)").all() as any[];
-if (!reqTableInfo.some(col => col.name === 'type')) runMigration("add type to requests", "ALTER TABLE attendance_requests ADD COLUMN type TEXT DEFAULT 'CORRECTION'");
-if (!reqTableInfo.some(col => col.name === 'start_date')) runMigration("add start_date to requests", "ALTER TABLE attendance_requests ADD COLUMN start_date TEXT");
-if (!reqTableInfo.some(col => col.name === 'end_date')) runMigration("add end_date to requests", "ALTER TABLE attendance_requests ADD COLUMN end_date TEXT");
-if (!reqTableInfo.some(col => col.name === 'half_day_slot')) runMigration("add half_day_slot to requests", "ALTER TABLE attendance_requests ADD COLUMN half_day_slot TEXT");
-if (!reqTableInfo.some(col => col.name === 'admin_comment')) runMigration("add admin_comment to requests", "ALTER TABLE attendance_requests ADD COLUMN admin_comment TEXT");
-if (!reqTableInfo.some(col => col.name === 'actioned_at')) runMigration("add actioned_at to requests", "ALTER TABLE attendance_requests ADD COLUMN actioned_at DATETIME");
-if (!reqTableInfo.some(col => col.name === 'actioned_by')) runMigration("add actioned_by to requests", "ALTER TABLE attendance_requests ADD COLUMN actioned_by TEXT");
-
 const attTableInfo = db.prepare("PRAGMA table_info(attendance)").all() as any[];
+if (!attTableInfo.some(col => col.name === 'registration_id')) {
+  runMigration("add registration_id to attendance", "ALTER TABLE attendance ADD COLUMN registration_id TEXT");
+}
 if (!attTableInfo.some(col => col.name === 'early_checkout_reason')) runMigration("add early_checkout_reason", "ALTER TABLE attendance ADD COLUMN early_checkout_reason TEXT");
 if (!attTableInfo.some(col => col.name === 'late_reason')) runMigration("add late_reason", "ALTER TABLE attendance ADD COLUMN late_reason TEXT");
 if (!attTableInfo.some(col => col.name === 'is_late')) runMigration("add is_late", "ALTER TABLE attendance ADD COLUMN is_late INTEGER DEFAULT 0");
@@ -283,6 +280,23 @@ if (!attTableInfo.some(col => col.name === 'longitude')) runMigration("add longi
 if (!attTableInfo.some(col => col.name === 'device_id')) runMigration("add device_id", "ALTER TABLE attendance ADD COLUMN device_id TEXT");
 if (!attTableInfo.some(col => col.name === 'photo_url')) runMigration("add photo_url", "ALTER TABLE attendance ADD COLUMN photo_url TEXT");
 if (!attTableInfo.some(col => col.name === 'is_proxy_flagged')) runMigration("add is_proxy_flagged", "ALTER TABLE attendance ADD COLUMN is_proxy_flagged INTEGER DEFAULT 0");
+
+const reqTableInfo = db.prepare("PRAGMA table_info(attendance_requests)").all() as any[];
+if (!reqTableInfo.some(col => col.name === 'registration_id')) {
+  runMigration("add registration_id to requests", "ALTER TABLE attendance_requests ADD COLUMN registration_id TEXT");
+}
+if (!reqTableInfo.some(col => col.name === 'type')) runMigration("add type to requests", "ALTER TABLE attendance_requests ADD COLUMN type TEXT DEFAULT 'CORRECTION'");
+if (!reqTableInfo.some(col => col.name === 'start_date')) runMigration("add start_date to requests", "ALTER TABLE attendance_requests ADD COLUMN start_date TEXT");
+if (!reqTableInfo.some(col => col.name === 'end_date')) runMigration("add end_date to requests", "ALTER TABLE attendance_requests ADD COLUMN end_date TEXT");
+if (!reqTableInfo.some(col => col.name === 'half_day_slot')) runMigration("add half_day_slot to requests", "ALTER TABLE attendance_requests ADD COLUMN half_day_slot TEXT");
+if (!reqTableInfo.some(col => col.name === 'admin_comment')) runMigration("add admin_comment to requests", "ALTER TABLE attendance_requests ADD COLUMN admin_comment TEXT");
+if (!reqTableInfo.some(col => col.name === 'actioned_at')) runMigration("add actioned_at to requests", "ALTER TABLE attendance_requests ADD COLUMN actioned_at DATETIME");
+if (!reqTableInfo.some(col => col.name === 'actioned_by')) runMigration("add actioned_by to requests", "ALTER TABLE attendance_requests ADD COLUMN actioned_by TEXT");
+
+const notifTableInfo = db.prepare("PRAGMA table_info(notifications)").all() as any[];
+if (!notifTableInfo.some(col => col.name === 'registration_id')) {
+  runMigration("add registration_id to notifications", "ALTER TABLE notifications ADD COLUMN registration_id TEXT");
+}
 
 const settingsTableInfo = db.prepare("PRAGMA table_info(sheet_settings)").all() as any[];
 if (!settingsTableInfo.some(col => col.name === 'web_app_url')) runMigration("add web_app_url", "ALTER TABLE sheet_settings ADD COLUMN web_app_url TEXT");
@@ -342,12 +356,12 @@ if (desigCount === 0) {
   for (const name of defaultDesignations) { stmt.run(name); }
 }
 
-const existingAdmin = db.prepare("SELECT id FROM users WHERE role = 'super_admin' OR registration_id = 'ADMIN-01'").get();
+const existingAdmin = db.prepare("SELECT id FROM users WHERE registration_id = 'ADMIN-01'").get();
 if (!existingAdmin) {
   db.prepare("INSERT INTO users (registration_id, name, email, role, department_id, password, designation, site_name, allowed_devices) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run("ADMIN-01", "Abhishek Bhatt (Admin)", "admin@rudra.com", "super_admin", 1, "admin123", "Chief Executive Officer (CEO)", "ARAMUS RUDRA", 99);
 }
 
-const existingDirector = db.prepare("SELECT id FROM users WHERE role = 'director' OR registration_id = 'DIR-01'").get();
+const existingDirector = db.prepare("SELECT id FROM users WHERE registration_id = 'DIR-01'").get();
 if (!existingDirector) {
   db.prepare("INSERT INTO users (registration_id, name, email, role, department_id, password, designation, site_name, allowed_devices) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run("DIR-01", "Director / Partner", "director@rudra.com", "director", 1, "director123", "Managing Director (MD)", "ARAMUS RUDRA", 99);
 }
@@ -416,22 +430,30 @@ function restoreDatabaseFromJson() {
       }
     }
 
-    // Restore users: Only update avatar and hardware device bindings; NEVER OVERWRITE USER WORK SHIFTS
+    // Restore users safely by registration_id
     if (Array.isArray(data.users) && data.users.length > 0) {
       for (const u of data.users) {
-        db.prepare(`
-          INSERT INTO users (id, registration_id, name, username, email, phone, role, department_id, site_name, password, designation, allowed_devices, bound_device_id, avatar_url, work_start_time, work_end_time, monthly_salary, date_of_joining)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(registration_id) DO UPDATE SET
-            avatar_url = COALESCE(users.avatar_url, excluded.avatar_url),
-            bound_device_id = COALESCE(users.bound_device_id, excluded.bound_device_id)
-        `).run(
-          u.id || null, u.registration_id, u.name, u.username || null, u.email || null, u.phone || null,
-          u.role || 'user', u.department_id || 1, u.site_name || 'ARAMUS RUDRA', u.password || 'password123',
-          u.designation || 'Staff', Number(u.allowed_devices) || 1, u.bound_device_id || null, u.avatar_url || null,
-          cleanTimeString(u.work_start_time, '10:00'), cleanTimeString(u.work_end_time, '19:00'),
-          Number(u.monthly_salary) || 0, u.date_of_joining || ''
-        );
+        if (!u.registration_id) continue;
+        const exists = db.prepare("SELECT id FROM users WHERE registration_id = ?").get(u.registration_id);
+        if (!exists) {
+          db.prepare(`
+            INSERT INTO users (registration_id, name, username, email, phone, role, department_id, site_name, password, designation, allowed_devices, bound_device_id, avatar_url, work_start_time, work_end_time, monthly_salary, date_of_joining)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            u.registration_id, u.name, u.username || null, u.email || null, u.phone || null,
+            u.role || 'user', u.department_id || 1, u.site_name || 'ARAMUS RUDRA', u.password || 'password123',
+            u.designation || 'Staff', Number(u.allowed_devices) || 1, u.bound_device_id || null, u.avatar_url || null,
+            cleanTimeString(u.work_start_time, '10:00'), cleanTimeString(u.work_end_time, '19:00'),
+            Number(u.monthly_salary) || 0, u.date_of_joining || ''
+          );
+        } else {
+          db.prepare(`
+            UPDATE users SET
+              avatar_url = COALESCE(users.avatar_url, ?),
+              bound_device_id = COALESCE(users.bound_device_id, ?)
+            WHERE registration_id = ?
+          `).run(u.avatar_url || null, u.bound_device_id || null, u.registration_id);
+        }
       }
     }
 
@@ -461,10 +483,9 @@ function backupDatabaseToJson() {
   }
 }
 
-// Restore base backup without wiping live state
 restoreDatabaseFromJson();
 
-// Safe Auto-Restore on Boot (Recovers missing staff without resetting live timings)
+// Safe Auto-Restore on Boot (Matches by registration_id, NEVER by auto-increment ID)
 async function autoSyncFromGoogleSheetsOnBoot() {
   try {
     let settings = db.prepare("SELECT * FROM sheet_settings WHERE id = 1").get() as any;
@@ -477,43 +498,36 @@ async function autoSyncFromGoogleSheetsOnBoot() {
     if (resJson.success && resJson.data) {
       const d = resJson.data;
 
-      db.prepare(`
-        INSERT INTO sheet_settings (id, web_app_url, sync_enabled, is_locked)
-        VALUES (1, ?, 1, 1)
-        ON CONFLICT(id) DO UPDATE SET web_app_url = excluded.web_app_url
-      `).run(targetUrl);
-
-      // Restore Missing Users only
+      // 1. Restore Missing Users ONLY (Never overwrite existing user's custom timings or names)
       if (Array.isArray(d.users) && d.users.length > 0) {
         for (const u of d.users) {
           const empName = u.name || u.full_name || u['Full Name'];
           const regCode = u.registration_id || u.employee_code || u['Employee Code'] || u.user_id || u['User ID'];
-          if (empName && u.role !== 'super_admin' && u.role !== 'director') {
-            const cleanStart = cleanTimeString(u.work_start_time || u.work_start || u['Shift Start'], '10:00');
-            const cleanEnd = cleanTimeString(u.work_end_time || u.work_end || u['Shift End'], '19:00');
-
+          if (empName && regCode && u.role !== 'super_admin' && u.role !== 'director') {
             const existingUser = db.prepare("SELECT id FROM users WHERE registration_id = ?").get(regCode);
             if (!existingUser) {
               db.prepare(`
                 INSERT INTO users (registration_id, name, username, email, phone, role, site_name, designation, monthly_salary, password, work_start_time, work_end_time, allowed_devices, bound_device_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
               `).run(
-                regCode || null, empName, u.username || null, u.email || null, u.phone || null,
+                regCode, empName, u.username || null, u.email || null, u.phone || null,
                 u.role || 'user', u.site_name || u.branch___site || 'ARAMUS RUDRA', u.designation || 'Staff',
                 Number(u.monthly_salary || u.monthly_salary_____) || 0, u.password || 'password123',
-                cleanStart, cleanEnd, Number(u.allowed_devices) || 1, u.bound_device_id || null
+                cleanTimeString(u.work_start_time || u.work_start || u['Shift Start'], '10:00'),
+                cleanTimeString(u.work_end_time || u.work_end || u['Shift End'], '19:00'),
+                Number(u.allowed_devices) || 1, u.bound_device_id || null
               );
             }
           }
         }
       }
 
-      // Restore Missing Attendance Logs only
+      // 2. Restore Attendance Logs strictly linked to registration_id
       if (Array.isArray(d.attendance) && d.attendance.length > 0) {
         for (const a of d.attendance) {
           const regId = a.registration_id || a.employee_code || a['Employee Code'];
-          const aName = a.name || a['Name'];
-          const user = db.prepare("SELECT id FROM users WHERE registration_id = ? OR name = ?").get(regId, aName) as any;
+          if (!regId) continue;
+          const user = db.prepare("SELECT id FROM users WHERE registration_id = ?").get(regId) as any;
           if (user && (a.date || a['Date'])) {
             const rawDate = a.date || a['Date'];
             let attDate = String(rawDate).trim();
@@ -529,14 +543,14 @@ async function autoSyncFromGoogleSheetsOnBoot() {
               }
             }
 
-            const existing = db.prepare("SELECT id FROM attendance WHERE user_id = ? AND date = ?").get(user.id, attDate);
+            const existing = db.prepare("SELECT id FROM attendance WHERE (user_id = ? OR registration_id = ?) AND date = ?").get(user.id, regId, attDate);
             if (!existing) {
               try {
                 db.prepare(`
-                  INSERT INTO attendance (user_id, date, check_in, check_out, status, method, location, late_minutes, overtime_hours)
-                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  INSERT INTO attendance (user_id, registration_id, date, check_in, check_out, status, method, location, late_minutes, overtime_hours)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 `).run(
-                  user.id, attDate,
+                  user.id, regId, attDate,
                   cleanTimeString(a.check_in || a['Check In'], ''),
                   cleanTimeString(a.check_out || a['Check Out'], ''),
                   a.status === 'Present' ? 'P' : (a.status === 'Late' ? 'L' : (a.status || 'P')),
@@ -549,7 +563,7 @@ async function autoSyncFromGoogleSheetsOnBoot() {
         }
       }
 
-      console.log(">>> Google Sheets verified without overwriting local modifications.");
+      console.log(">>> Verified state from Google Sheets without user mismatch.");
       backupDatabaseToJson();
     }
   } catch (err: any) {
@@ -557,7 +571,6 @@ async function autoSyncFromGoogleSheetsOnBoot() {
   }
 }
 
-// Auto-Sync strictly executes non-destructive restore
 setTimeout(() => {
   autoSyncFromGoogleSheetsOnBoot();
 }, 2500);
@@ -580,7 +593,7 @@ async function syncFullDatabaseToSheets(): Promise<{ success: boolean; message: 
              a.overtime_hours, a.method, a.device_id, a.latitude, a.longitude, 
              a.ip_address, a.photo_url, a.early_checkout_reason, a.late_reason, a.created_at
       FROM attendance a
-      JOIN users u ON a.user_id = u.id
+      JOIN users u ON (a.registration_id = u.registration_id OR a.user_id = u.id)
       ORDER BY a.date DESC, a.check_in DESC
     `).all() as any[];
 
@@ -603,14 +616,14 @@ async function syncFullDatabaseToSheets(): Promise<{ success: boolean; message: 
     const approvals = db.prepare(`
       SELECT r.id, u.registration_id, u.name as user_name, r.date, r.type, r.check_in, r.check_out, r.status, r.reason, r.site_name, r.admin_comment, r.actioned_at, r.created_at
       FROM attendance_requests r
-      JOIN users u ON r.user_id = u.id
+      JOIN users u ON (r.registration_id = u.registration_id OR r.user_id = u.id)
       ORDER BY r.created_at DESC
     `).all() as any[];
 
     const salary_advances = db.prepare(`
       SELECT sa.id, sa.date, u.registration_id, u.name as user_name, sa.type, sa.amount, sa.notes, sa.created_at
       FROM salary_advances sa
-      JOIN users u ON sa.user_id = u.id
+      JOIN users u ON (sa.registration_id = u.registration_id OR sa.user_id = u.id)
       ORDER BY sa.date DESC
     `).all() as any[];
 
@@ -652,20 +665,20 @@ async function syncFullDatabaseToSheets(): Promise<{ success: boolean; message: 
 function triggerLiveSync(context = "general") {
   syncFullDatabaseToSheets().then(res => {
     if (res.success) {
-      console.log(`[GoogleSheet Live Sync] Triggered successfully for: ${context}`);
+      console.log(`[GoogleSheet Live Sync] Triggered for: ${context}`);
     }
   }).catch(e => {
-    console.warn(`[GoogleSheet Live Sync] Background sync warning:`, e.message);
+    console.warn(`[GoogleSheet Live Sync] Warning:`, e.message);
   });
 }
 
-// Stream punch to Google Sheet with 8-second Timeout controller to prevent freeze
-async function appendAttendanceLogLive(userId: number, date: string, checkInTime: string, status: string, method: string, sessionId: number | null, checkoutTime?: string, overtimeHours = 0) {
+// Stream punch to Google Sheet
+async function appendAttendanceLogLive(userId: number, regId: string, date: string, checkInTime: string, status: string, method: string, sessionId: number | null, checkoutTime?: string, overtimeHours = 0) {
   try {
     const settings = db.prepare("SELECT * FROM sheet_settings WHERE id = 1").get() as any;
     const targetUrl = settings?.web_app_url || DEFAULT_WEB_APP_URL;
 
-    const user = db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as any;
+    const user = db.prepare("SELECT * FROM users WHERE registration_id = ? OR id = ?").get(regId, userId) as any;
     if (!user) return;
 
     const controller = new AbortController();
@@ -674,7 +687,7 @@ async function appendAttendanceLogLive(userId: number, date: string, checkInTime
     const payload = {
       action: "appendAttendance",
       record: {
-        id: `ATT-${userId}-${date}`,
+        id: `ATT-${user.registration_id}-${date}`,
         date: date.split("T")[0],
         check_in: cleanTimeString(checkInTime, ''),
         check_out: cleanTimeString(checkoutTime, ''),
@@ -714,11 +727,14 @@ async function startServer() {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
   });
 
-  // Overtime Balance Summary Endpoint (For User Leave Desk)
+  // Overtime Balance Query
   app.get("/api/attendance/overtime/:userId", (req, res) => {
     const { userId } = req.params;
     try {
-      const rows = db.prepare("SELECT overtime_hours FROM attendance WHERE user_id = ?").all(userId) as any[];
+      const user = db.prepare("SELECT id, registration_id FROM users WHERE id = ? OR registration_id = ?").get(userId, userId) as any;
+      if (!user) return res.json({ success: true, totalOvertimeHours: 0 });
+
+      const rows = db.prepare("SELECT overtime_hours FROM attendance WHERE user_id = ? OR registration_id = ?").all(user.id, user.registration_id) as any[];
       let totalOvertime = 0;
       rows.forEach(r => {
         if (r.overtime_hours) totalOvertime += Number(r.overtime_hours);
@@ -729,7 +745,7 @@ async function startServer() {
     }
   });
 
-  // Login Handler with Strict Hardware Device Access Limit
+  // Login Handler (Permanent 365 Days Session Cookie)
   app.post("/api/login", (req, res) => {
     const { identifier, username, password, deviceId } = req.body;
     const searchVal = String(identifier || username || "").trim();
@@ -777,6 +793,12 @@ async function startServer() {
         triggerLiveSync('device_bound');
       }
     }
+
+    res.cookie("staffsync_user", String(user.registration_id), {
+      maxAge: 365 * 24 * 60 * 60 * 1000,
+      httpOnly: false,
+      sameSite: "lax"
+    });
 
     res.json({ success: true, user });
   });
@@ -947,13 +969,12 @@ async function startServer() {
     } = req.body;
 
     try {
-      const existingUser = db.prepare("SELECT * FROM users WHERE id = ?").get(id) as any;
+      const existingUser = db.prepare("SELECT * FROM users WHERE id = ? OR registration_id = ?").get(id, id) as any;
       if (!existingUser) return res.status(404).json({ success: false, message: "User not found" });
 
       db.prepare(`
         UPDATE users 
-        SET registration_id = COALESCE(?, registration_id),
-            username = COALESCE(?, username),
+        SET username = COALESCE(?, username),
             name = COALESCE(?, name),
             email = ?,
             phone = ?,
@@ -970,7 +991,7 @@ async function startServer() {
             date_of_joining = COALESCE(?, date_of_joining)
         WHERE id = ?
       `).run(
-        registration_id || null, username || null, name ? name.trim() : null, 
+        username || null, name ? name.trim() : null, 
         email !== undefined ? email : existingUser.email, 
         phone !== undefined ? phone : existingUser.phone, 
         country !== undefined ? country : null, role !== undefined ? role : null, 
@@ -980,13 +1001,13 @@ async function startServer() {
         work_start_time !== undefined ? cleanTimeString(work_start_time, '10:00') : null, 
         work_end_time !== undefined ? cleanTimeString(work_end_time, '19:00') : null, 
         monthly_salary !== undefined ? Number(monthly_salary) : null, 
-        date_of_joining !== undefined ? date_of_joining : null, id
+        date_of_joining !== undefined ? date_of_joining : null, existingUser.id
       );
 
       backupDatabaseToJson();
       triggerLiveSync('update_user');
 
-      const updatedUser = db.prepare("SELECT * FROM users WHERE id = ?").get(id);
+      const updatedUser = db.prepare("SELECT * FROM users WHERE id = ?").get(existingUser.id);
       res.json({ success: true, user: updatedUser, message: "Staff updated successfully" });
     } catch (e: any) {
       res.status(500).json({ success: false, message: e.message });
@@ -996,7 +1017,7 @@ async function startServer() {
   app.put("/api/users/:id", handleUpdateUser);
   app.put("/api/super_admin/users/:id", handleUpdateUser);
 
-  // Permanent Profile Update including avatar_url
+  // Permanent Profile Update
   app.put("/api/users/:id/profile", (req, res) => {
     const { id } = req.params;
     const { email, current_address, marital_status, emergency_contact, date_of_birth, date_of_joining, avatar_url } = req.body;
@@ -1010,15 +1031,15 @@ async function startServer() {
             date_of_birth = COALESCE(?, date_of_birth),
             date_of_joining = COALESCE(?, date_of_joining),
             avatar_url = COALESCE(?, avatar_url)
-        WHERE id = ?
+        WHERE id = ? OR registration_id = ?
       `).run(
         email || null, current_address || null, marital_status || null,
         emergency_contact || null, date_of_birth || null, date_of_joining || null,
-        avatar_url || null, id
+        avatar_url || null, id, id
       );
       backupDatabaseToJson();
       triggerLiveSync('update_profile');
-      const updatedUser = db.prepare("SELECT * FROM users WHERE id = ?").get(id);
+      const updatedUser = db.prepare("SELECT * FROM users WHERE id = ? OR registration_id = ?").get(id, id);
       res.json({ success: true, user: updatedUser });
     } catch (e: any) {
       res.status(500).json({ success: false, message: e.message });
@@ -1028,11 +1049,14 @@ async function startServer() {
   app.delete(["/api/users/:id", "/api/super_admin/users/:id"], (req, res) => {
     const { id } = req.params;
     try {
-      db.prepare("DELETE FROM attendance WHERE user_id = ?").run(id);
-      db.prepare("DELETE FROM attendance_requests WHERE user_id = ?").run(id);
-      db.prepare("DELETE FROM salary_advances WHERE user_id = ?").run(id);
-      db.prepare("DELETE FROM notifications WHERE user_id = ?").run(id);
-      db.prepare("DELETE FROM users WHERE id = ?").run(id);
+      const user = db.prepare("SELECT id, registration_id FROM users WHERE id = ? OR registration_id = ?").get(id, id) as any;
+      if (user) {
+        db.prepare("DELETE FROM attendance WHERE user_id = ? OR registration_id = ?").run(user.id, user.registration_id);
+        db.prepare("DELETE FROM attendance_requests WHERE user_id = ? OR registration_id = ?").run(user.id, user.registration_id);
+        db.prepare("DELETE FROM salary_advances WHERE user_id = ? OR registration_id = ?").run(user.id, user.registration_id);
+        db.prepare("DELETE FROM notifications WHERE user_id = ? OR registration_id = ?").run(user.id, user.registration_id);
+        db.prepare("DELETE FROM users WHERE id = ?").run(user.id);
+      }
 
       backupDatabaseToJson();
       triggerLiveSync('delete_user');
@@ -1098,7 +1122,7 @@ async function startServer() {
     }
   });
 
-  // Attendance Punch In
+  // Attendance Punch In (Strictly binds with user's registration_id)
   app.post("/api/attendance/check-in", (req, res) => {
     const { userId, date, time, location, method, sessionId, deviceId, photoUrl, lateReason } = req.body;
     
@@ -1109,23 +1133,26 @@ async function startServer() {
       });
     }
 
-    const userRow = db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as any;
+    const userRow = db.prepare("SELECT * FROM users WHERE id = ? OR registration_id = ?").get(userId, userId) as any;
+    if (!userRow) {
+      return res.status(404).json({ success: false, message: "Staff member not recognized." });
+    }
     
     const effectiveDevId = String(deviceId || req.headers['x-device-id'] || req.headers['user-agent'] || "").slice(0, 100);
-    if (userRow && (Number(userRow.allowed_devices) || 1) === 1 && userRow.role !== 'super_admin' && userRow.role !== 'director') {
+    if ((Number(userRow.allowed_devices) || 1) === 1 && userRow.role !== 'super_admin' && userRow.role !== 'director') {
       if (userRow.bound_device_id && effectiveDevId && userRow.bound_device_id !== effectiveDevId) {
         return res.status(403).json({ 
           success: false, 
           message: "Security Violation: Account bound to another device. Cannot punch attendance." 
         });
       } else if (!userRow.bound_device_id && effectiveDevId) {
-        db.prepare("UPDATE users SET bound_device_id = ? WHERE id = ?").run(effectiveDevId, userId);
+        db.prepare("UPDATE users SET bound_device_id = ? WHERE id = ?").run(effectiveDevId, userRow.id);
       }
     }
 
     const actualDate = date || getTodayISTDate();
 
-    const existing = db.prepare("SELECT * FROM attendance WHERE user_id = ? AND date = ?").get(userId, actualDate);
+    const existing = db.prepare("SELECT * FROM attendance WHERE (user_id = ? OR registration_id = ?) AND date = ?").get(userRow.id, userRow.registration_id, actualDate);
     if (existing) {
       return res.status(400).json({ success: false, message: "Already checked in for today" });
     }
@@ -1141,41 +1168,57 @@ async function startServer() {
     const cleanTime = cleanTimeString(time, getNowISTTimeString());
     const timeParts = cleanTime.split(":");
     const totalMinutes = parseInt(timeParts[0], 10) * 60 + parseInt(timeParts[1] || "0", 10);
-    const standardStartMinutes = 10 * 60;
+    
+    // Check against individual employee's scheduled work_start_time
+    let startLimitMins = 10 * 60;
+    if (userRow.work_start_time) {
+      const sp = userRow.work_start_time.split(":");
+      startLimitMins = parseInt(sp[0], 10) * 60 + parseInt(sp[1] || "0", 10);
+    }
 
-    if (totalMinutes > standardStartMinutes) {
+    if (totalMinutes > startLimitMins) {
       status = "L";
       isLate = 1;
-      lateMinutes = totalMinutes - standardStartMinutes;
+      lateMinutes = totalMinutes - startLimitMins;
     }
 
     const result = db.prepare(`
-      INSERT INTO attendance (user_id, session_id, date, check_in, status, location, method, ip_address, latitude, longitude, device_id, photo_url, is_proxy_flagged, is_late, late_minutes, late_reason)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(userId, sessionId || null, actualDate, cleanTime, status, location ? JSON.stringify(location) : null, method || 'app', ip || null, lat, lng, deviceId || null, photoUrl || null, 0, isLate, lateMinutes, lateReason || null);
+      INSERT INTO attendance (user_id, registration_id, session_id, date, check_in, status, location, method, ip_address, latitude, longitude, device_id, photo_url, is_proxy_flagged, is_late, late_minutes, late_reason)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(userRow.id, userRow.registration_id, sessionId || null, actualDate, cleanTime, status, location ? JSON.stringify(location) : null, method || 'app', ip || null, lat, lng, deviceId || null, photoUrl || null, 0, isLate, lateMinutes, lateReason || null);
 
-    appendAttendanceLogLive(userId, actualDate, cleanTime, status, method || 'app', sessionId || null);
+    appendAttendanceLogLive(userRow.id, userRow.registration_id, actualDate, cleanTime, status, method || 'app', sessionId || null);
     triggerLiveSync('attendance_punch_in');
 
     res.json({ success: true, id: result.lastInsertRowid, isLate: isLate === 1, lateMinutes, status });
   });
 
-  // Attendance Punch Out with Automatic Overtime
+  // Attendance Punch Out
   app.post("/api/attendance/check-out", (req, res) => {
     const { userId, date, time, earlyCheckoutReason } = req.body;
     try {
+      const userRow = db.prepare("SELECT * FROM users WHERE id = ? OR registration_id = ?").get(userId, userId) as any;
+      if (!userRow) return res.status(404).json({ success: false, message: "Staff not found" });
+
       const actualDate = date || getTodayISTDate();
-      const lastRecord = db.prepare("SELECT * FROM attendance WHERE user_id = ? AND date = ? ORDER BY id DESC LIMIT 1").get(userId, actualDate) as any;
+      const lastRecord = db.prepare("SELECT * FROM attendance WHERE (user_id = ? OR registration_id = ?) AND date = ? ORDER BY id DESC LIMIT 1").get(userRow.id, userRow.registration_id, actualDate) as any;
       if (!lastRecord) return res.status(404).json({ success: false, message: "No check-in record found for today." });
       if (lastRecord.check_out) return res.status(400).json({ success: false, message: "Already checked out today" });
 
       const cleanOutTime = cleanTimeString(time, getNowISTTimeString());
+      
+      let shiftEndLimitMins = 19 * 60;
+      if (userRow.work_end_time) {
+        const ep = userRow.work_end_time.split(":");
+        shiftEndLimitMins = parseInt(ep[0], 10) * 60 + parseInt(ep[1] || "0", 10);
+      }
+
       let overtimeHours = 0;
       if (cleanOutTime) {
         const timeParts = cleanOutTime.split(":");
         const totalOutMinutes = parseInt(timeParts[0], 10) * 60 + parseInt(timeParts[1] || "0", 10);
-        if (totalOutMinutes > (19 * 60)) {
-          overtimeHours = Math.round(((totalOutMinutes - (19 * 60)) / 60) * 10) / 10;
+        if (totalOutMinutes > shiftEndLimitMins) {
+          overtimeHours = Math.round(((totalOutMinutes - shiftEndLimitMins) / 60) * 10) / 10;
         }
       }
 
@@ -1185,7 +1228,7 @@ async function startServer() {
         WHERE id = ?
       `).run(cleanOutTime, earlyCheckoutReason || null, overtimeHours, lastRecord.id);
 
-      appendAttendanceLogLive(userId, actualDate, lastRecord.check_in, lastRecord.status, lastRecord.method, lastRecord.session_id, cleanOutTime, overtimeHours);
+      appendAttendanceLogLive(userRow.id, userRow.registration_id, actualDate, lastRecord.check_in, lastRecord.status, lastRecord.method, lastRecord.session_id, cleanOutTime, overtimeHours);
       triggerLiveSync('attendance_punch_out');
 
       res.json({ success: true, message: `Checked out at ${cleanOutTime}`, overtimeHours });
@@ -1194,7 +1237,7 @@ async function startServer() {
     }
   });
 
-  // Manual Attendance Entry / Override by Admin
+  // Manual Attendance Entry
   const handleManualAttendance = (req: express.Request, res: express.Response) => {
     const { 
       userId, user_id, registration_id, name, user_name, employee_code,
@@ -1245,7 +1288,7 @@ async function startServer() {
         }
       }
 
-      const existing = db.prepare("SELECT * FROM attendance WHERE user_id = ? AND date = ?").get(user.id, targetDate) as any;
+      const existing = db.prepare("SELECT * FROM attendance WHERE (user_id = ? OR registration_id = ?) AND date = ?").get(user.id, user.registration_id, targetDate) as any;
 
       if (existing) {
         db.prepare(`
@@ -1255,13 +1298,13 @@ async function startServer() {
         `).run(finalCheckIn, finalCheckOut, finalStatus, overtimeHours, finalReason, location || finalSite, existing.id);
       } else {
         db.prepare(`
-          INSERT INTO attendance (user_id, date, check_in, check_out, status, overtime_hours, method, late_reason, location) 
-          VALUES (?, ?, ?, ?, ?, ?, 'manual', ?, ?)
-        `).run(user.id, targetDate, finalCheckIn, finalCheckOut, finalStatus, overtimeHours, finalReason, location || finalSite);
+          INSERT INTO attendance (user_id, registration_id, date, check_in, check_out, status, overtime_hours, method, late_reason, location) 
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?)
+        `).run(user.id, user.registration_id, targetDate, finalCheckIn, finalCheckOut, finalStatus, overtimeHours, finalReason, location || finalSite);
       }
 
       backupDatabaseToJson();
-      appendAttendanceLogLive(user.id, targetDate, finalCheckIn, finalStatus, 'manual', null, finalCheckOut || undefined, overtimeHours);
+      appendAttendanceLogLive(user.id, user.registration_id, targetDate, finalCheckIn, finalStatus, 'manual', null, finalCheckOut || undefined, overtimeHours);
       triggerLiveSync('manual_attendance');
 
       return res.json({ success: true, message: `Attendance saved successfully for ${user.name}!` });
@@ -1375,6 +1418,71 @@ async function startServer() {
           VALUES (1, ?, 1, 1)
           ON CONFLICT(id) DO UPDATE SET web_app_url = excluded.web_app_url
         `).run(targetUrl);
+
+        // 1. Restore Missing Users ONLY (Never overwrite existing user's custom timings or names)
+        if (Array.isArray(d.users) && d.users.length > 0) {
+          for (const u of d.users) {
+            const empName = u.name || u.full_name || u['Full Name'];
+            const regCode = u.registration_id || u.employee_code || u['Employee Code'] || u.user_id || u['User ID'];
+            if (empName && regCode && u.role !== 'super_admin' && u.role !== 'director') {
+              const existingUser = db.prepare("SELECT id FROM users WHERE registration_id = ?").get(regCode);
+              if (!existingUser) {
+                db.prepare(`
+                  INSERT INTO users (registration_id, name, username, email, phone, role, site_name, designation, monthly_salary, password, work_start_time, work_end_time, allowed_devices, bound_device_id)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                `).run(
+                  regCode, empName, u.username || null, u.email || null, u.phone || null,
+                  u.role || 'user', u.site_name || u.branch___site || 'ARAMUS RUDRA', u.designation || 'Staff',
+                  Number(u.monthly_salary || u.monthly_salary_____) || 0, u.password || 'password123',
+                  cleanTimeString(u.work_start_time || u.work_start || u['Shift Start'], '10:00'),
+                  cleanTimeString(u.work_end_time || u.work_end || u['Shift End'], '19:00'),
+                  Number(u.allowed_devices) || 1, u.bound_device_id || null
+                );
+              }
+            }
+          }
+        }
+
+        // 2. Restore Attendance Logs strictly linked to registration_id
+        if (Array.isArray(d.attendance) && d.attendance.length > 0) {
+          for (const a of d.attendance) {
+            const regId = a.registration_id || a.employee_code || a['Employee Code'];
+            if (!regId) continue;
+            const user = db.prepare("SELECT id FROM users WHERE registration_id = ?").get(regId) as any;
+            if (user && (a.date || a['Date'])) {
+              const rawDate = a.date || a['Date'];
+              let attDate = String(rawDate).trim();
+              if (attDate.includes("T")) {
+                attDate = attDate.split("T")[0];
+              } else if (attDate.includes("/")) {
+                const parts = attDate.split("/");
+                if (parts.length === 3) {
+                  const y = parts[2].length === 4 ? parts[2] : `20${parts[2]}`;
+                  const m = parts[1].padStart(2, '0');
+                  const d = parts[0].padStart(2, '0');
+                  attDate = `${y}-${m}-${d}`;
+                }
+              }
+
+              const existing = db.prepare("SELECT id FROM attendance WHERE (user_id = ? OR registration_id = ?) AND date = ?").get(user.id, regId, attDate);
+              if (!existing) {
+                try {
+                  db.prepare(`
+                    INSERT INTO attendance (user_id, registration_id, date, check_in, check_out, status, method, location, late_minutes, overtime_hours)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  `).run(
+                    user.id, regId, attDate,
+                    cleanTimeString(a.check_in || a['Check In'], ''),
+                    cleanTimeString(a.check_out || a['Check Out'], ''),
+                    a.status === 'Present' ? 'P' : (a.status === 'Late' ? 'L' : (a.status || 'P')),
+                    a.method || 'app', a.site_name || a.branch___site || 'ARAMUS RUDRA',
+                    Number(a.late_minutes || a.late__min_) || 0, Number(a.overtime_hours || a.overtime__hrs_) || 0
+                  );
+                } catch (_) {}
+              }
+            }
+          }
+        }
 
         backupDatabaseToJson();
         return res.json({ success: true, message: "Successfully pulled and restored all data from Google Sheets!" });
@@ -1502,7 +1610,7 @@ async function startServer() {
     res.json({ success: true, message: "Geofence settings updated." });
   });
 
-  // Sessions API (For QR Code Attendance Systems)
+  // Sessions API
   app.get("/api/sessions", (req, res) => {
     try {
       const list = db.prepare("SELECT s.*, d.name as department_name FROM sessions s LEFT JOIN departments d ON s.department_id = d.id ORDER BY s.date DESC").all();
@@ -1526,12 +1634,12 @@ async function startServer() {
     }
   });
 
-  // QR Code Generation & Verification
+  // QR Code Verification
   app.post("/api/qr/generate", (req, res) => {
     const { createdBy } = req.body;
     try {
       const qrCode = `QR_${Date.now()}_${Math.random().toString(36).substring(7)}`;
-      const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString(); // 5 minutes validity
+      const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
       db.prepare("INSERT INTO qr_sessions (qr_code, created_by, expires_at) VALUES (?, ?, ?)").run(qrCode, createdBy || null, expiresAt);
       res.json({ success: true, qrCode, expiresAt });
     } catch (e: any) {
@@ -1553,19 +1661,19 @@ async function startServer() {
     }
   });
 
-  // Salary Advances & Loans Endpoints
+  // Salary Advances & Loans
   app.get("/api/salary-advances", (req, res) => {
     const { userId } = req.query;
     try {
       let query = `
         SELECT sa.*, u.name as user_name, u.registration_id
         FROM salary_advances sa
-        JOIN users u ON sa.user_id = u.id
+        JOIN users u ON (sa.registration_id = u.registration_id OR sa.user_id = u.id)
       `;
       let params: any[] = [];
       if (userId) {
-        query += " WHERE sa.user_id = ?";
-        params.push(userId);
+        query += " WHERE sa.user_id = ? OR sa.registration_id = ?";
+        params.push(userId, userId);
       }
       query += " ORDER BY sa.date DESC";
       const rows = db.prepare(query).all(...params);
@@ -1578,10 +1686,11 @@ async function startServer() {
   app.post("/api/salary-advances", (req, res) => {
     const { userId, type, amount, date, notes } = req.body;
     try {
+      const user = db.prepare("SELECT id, registration_id FROM users WHERE id = ? OR registration_id = ?").get(userId, userId) as any;
       const result = db.prepare(`
-        INSERT INTO salary_advances (user_id, type, amount, date, notes)
-        VALUES (?, ?, ?, ?, ?)
-      `).run(userId, type || 'Advance', Number(amount) || 0, date || getTodayISTDate(), notes || null);
+        INSERT INTO salary_advances (user_id, registration_id, type, amount, date, notes)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(user ? user.id : userId, user ? user.registration_id : null, type || 'Advance', Number(amount) || 0, date || getTodayISTDate(), notes || null);
       backupDatabaseToJson();
       triggerLiveSync('salary_advances');
       res.json({ success: true, id: result.lastInsertRowid });
@@ -1602,7 +1711,7 @@ async function startServer() {
     }
   });
 
-  // Attendance Requests Workflow
+  // Attendance Requests Workflow (Bound to registration_id)
   app.all([
     "/api/attendance/request",
     "/api/attendance/requests",
@@ -1613,7 +1722,7 @@ async function startServer() {
       const requests = db.prepare(`
         SELECT r.*, u.name as user_name, u.registration_id, u.site_name as user_site_name, u.designation
         FROM attendance_requests r
-        JOIN users u ON r.user_id = u.id
+        JOIN users u ON (r.registration_id = u.registration_id OR r.user_id = u.id)
         ORDER BY r.created_at DESC
       `).all();
       return res.json(requests);
@@ -1622,7 +1731,7 @@ async function startServer() {
     if (req.method === 'POST') {
       const { userId, date, startDate, endDate, checkIn, checkOut, requested_check_in, requested_check_out, reason, siteName, type, halfDaySlot } = req.body;
       try {
-        const user = db.prepare("SELECT * FROM users WHERE id = ?").get(userId) as any;
+        const user = db.prepare("SELECT * FROM users WHERE id = ? OR registration_id = ?").get(userId, userId) as any;
         if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
         const targetDate = date || startDate || getTodayISTDate();
@@ -1630,10 +1739,11 @@ async function startServer() {
         const outTime = cleanTimeString(checkOut || requested_check_out, '');
 
         const result = db.prepare(`
-          INSERT INTO attendance_requests (user_id, date, start_date, end_date, check_in, check_out, reason, site_name, type, half_day_slot, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')
+          INSERT INTO attendance_requests (user_id, registration_id, date, start_date, end_date, check_in, check_out, reason, site_name, type, half_day_slot, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')
         `).run(
-          userId, 
+          user.id, 
+          user.registration_id,
           targetDate, 
           startDate || targetDate, 
           endDate || targetDate, 
@@ -1658,13 +1768,17 @@ async function startServer() {
   app.get("/api/attendance/requests/user/:userId", (req, res) => {
     const { userId } = req.params;
     try {
+      const user = db.prepare("SELECT id, registration_id FROM users WHERE id = ? OR registration_id = ?").get(userId, userId) as any;
+      const targetId = user ? user.id : userId;
+      const targetReg = user ? user.registration_id : userId;
+
       const requests = db.prepare(`
         SELECT r.*, u.name as user_name, u.registration_id, u.site_name as user_site_name, u.designation
         FROM attendance_requests r
-        JOIN users u ON r.user_id = u.id
-        WHERE r.user_id = ?
+        JOIN users u ON (r.registration_id = u.registration_id OR r.user_id = u.id)
+        WHERE r.user_id = ? OR r.registration_id = ?
         ORDER BY r.created_at DESC
-      `).all(userId);
+      `).all(targetId, targetReg);
       res.json(requests);
     } catch (e: any) {
       res.status(500).json({ success: false, message: e.message });
@@ -1731,9 +1845,9 @@ async function startServer() {
 
       const notifMsg = `Your ${request.type} request for ${request.date || request.start_date} was APPROVED.`;
       db.prepare(`
-        INSERT INTO notifications (user_id, title, message, type, is_read)
-        VALUES (?, 'Request Approved ✅', ?, 'success', 0)
-      `).run(request.user_id, notifMsg);
+        INSERT INTO notifications (user_id, registration_id, title, message, type, is_read)
+        VALUES (?, ?, 'Request Approved ✅', ?, 'success', 0)
+      `).run(request.user_id, request.registration_id, notifMsg);
 
       backupDatabaseToJson();
       triggerLiveSync('approve_request');
@@ -1758,9 +1872,9 @@ async function startServer() {
 
       const notifMsg = `Your ${request.type} request for ${request.date || request.start_date} was DECLINED: "${adminComment || 'No comment'}"`;
       db.prepare(`
-        INSERT INTO notifications (user_id, title, message, type, is_read)
-        VALUES (?, 'Request Declined ❌', ?, 'warning', 0)
-      `).run(request.user_id, notifMsg);
+        INSERT INTO notifications (user_id, registration_id, title, message, type, is_read)
+        VALUES (?, ?, 'Request Declined ❌', ?, 'warning', 0)
+      `).run(request.user_id, request.registration_id, notifMsg);
 
       backupDatabaseToJson();
       triggerLiveSync('reject_request');
@@ -1774,11 +1888,20 @@ async function startServer() {
   app.get("/api/notifications", (req, res) => {
     const { userId } = req.query;
     try {
-      const list = db.prepare(`
-        SELECT * FROM notifications 
-        WHERE user_id = ? OR user_id IS NULL 
-        ORDER BY created_at DESC LIMIT 30
-      `).all(userId || null);
+      let list = [];
+      if (userId) {
+        const user = db.prepare("SELECT id, registration_id FROM users WHERE id = ? OR registration_id = ?").get(userId, userId) as any;
+        const targetId = user ? user.id : userId;
+        const targetReg = user ? user.registration_id : userId;
+
+        list = db.prepare(`
+          SELECT * FROM notifications 
+          WHERE user_id = ? OR registration_id = ? OR user_id IS NULL 
+          ORDER BY created_at DESC LIMIT 30
+        `).all(targetId, targetReg);
+      } else {
+        list = db.prepare(`SELECT * FROM notifications ORDER BY created_at DESC LIMIT 30`).all();
+      }
       res.json(list);
     } catch (e: any) {
       res.status(500).json({ success: false, message: e.message });
@@ -1797,7 +1920,7 @@ async function startServer() {
   app.post("/api/notifications/clear", (req, res) => {
     const { userId } = req.body;
     try {
-      db.prepare("DELETE FROM notifications WHERE user_id = ? OR user_id IS NULL").run(userId || null);
+      db.prepare("DELETE FROM notifications WHERE user_id = ? OR registration_id = ? OR user_id IS NULL").run(userId || null, userId || null);
       res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ success: false, message: e.message });
@@ -1920,17 +2043,23 @@ async function startServer() {
     }
   });
 
-  // Attendance History & Master Logs
+  // Attendance History (Bound to user's registration_id)
   app.get("/api/attendance/history/:userId", (req, res) => {
-    const history = db.prepare("SELECT * FROM attendance WHERE user_id = ? ORDER BY date DESC").all(req.params.userId);
+    const { userId } = req.params;
+    const user = db.prepare("SELECT id, registration_id FROM users WHERE id = ? OR registration_id = ?").get(userId, userId) as any;
+    const targetId = user ? user.id : userId;
+    const targetReg = user ? user.registration_id : userId;
+
+    const history = db.prepare("SELECT * FROM attendance WHERE user_id = ? OR registration_id = ? ORDER BY date DESC").all(targetId, targetReg);
     res.json(history);
   });
 
+  // Master Attendance Directory (Joins by registration_id to prevent any name swapping)
   app.get("/api/super_admin/attendance", (req, res) => {
     const records = db.prepare(`
       SELECT a.*, u.name as user_name, u.registration_id, u.site_name as user_site_name, u.designation
       FROM attendance a
-      JOIN users u ON a.user_id = u.id
+      JOIN users u ON (a.registration_id = u.registration_id OR a.user_id = u.id)
       ORDER BY a.date DESC, a.check_in DESC
     `).all();
     res.json(records);
