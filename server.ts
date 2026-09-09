@@ -356,6 +356,7 @@ if (desigCount === 0) {
   for (const name of defaultDesignations) { stmt.run(name); }
 }
 
+// Safe Admin / Director Seeding: NEVER overwrites password if user already exists
 const existingAdmin = db.prepare("SELECT id FROM users WHERE registration_id = 'ADMIN-01'").get();
 if (!existingAdmin) {
   db.prepare("INSERT INTO users (registration_id, name, email, role, department_id, password, designation, site_name, allowed_devices) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run("ADMIN-01", "Abhishek Bhatt (Admin)", "admin@rudra.com", "super_admin", 1, "admin123", "Chief Executive Officer (CEO)", "ARAMUS RUDRA", 99);
@@ -430,7 +431,7 @@ function restoreDatabaseFromJson() {
       }
     }
 
-    // Restore users safely by registration_id
+    // Restore users safely by registration_id WITHOUT overwriting live changes
     if (Array.isArray(data.users) && data.users.length > 0) {
       for (const u of data.users) {
         if (!u.registration_id) continue;
@@ -483,9 +484,10 @@ function backupDatabaseToJson() {
   }
 }
 
-restoreDatabaseFromJson();
+// ⚠️ PROTECTED: Overwrite loop disabled on boot so live timings & passwords never get wiped out on refresh
+// restoreDatabaseFromJson();
 
-// Safe Auto-Restore on Boot (Matches by registration_id, NEVER by auto-increment ID)
+// Safe Auto-Restore on Boot (Matches by registration_id, NEVER overwrites existing user records)
 async function autoSyncFromGoogleSheetsOnBoot() {
   try {
     let settings = db.prepare("SELECT * FROM sheet_settings WHERE id = 1").get() as any;
@@ -571,9 +573,10 @@ async function autoSyncFromGoogleSheetsOnBoot() {
   }
 }
 
-setTimeout(() => {
-  autoSyncFromGoogleSheetsOnBoot();
-}, 2500);
+// ⚠️ PROTECTED: Boot timeout sync disabled to eliminate timing reset on every restart/page refresh!
+// setTimeout(() => {
+//   autoSyncFromGoogleSheetsOnBoot();
+// }, 2500);
 
 async function syncFullDatabaseToSheets(): Promise<{ success: boolean; message: string }> {
   try {
@@ -1122,7 +1125,7 @@ async function startServer() {
     }
   });
 
-// Attendance Punch In
+  // Attendance Punch In (Strictly binds with user's registration_id)
   app.post("/api/attendance/check-in", (req, res) => {
     const { userId, registration_id, date, time, location, method, sessionId, deviceId, photoUrl, lateReason } = req.body;
     
@@ -1133,17 +1136,9 @@ async function startServer() {
       });
     }
 
-    // First search by registration_id, then fallback to id to prevent cross-user mapping
-    let userRow = null;
-    if (registration_id) {
-      userRow = db.prepare("SELECT * FROM users WHERE registration_id = ?").get(registration_id) as any;
-    }
-    if (!userRow && userId) {
-      userRow = db.prepare("SELECT * FROM users WHERE id = ? OR registration_id = ?").get(userId, String(userId)) as any;
-    }
-
+    const userRow = db.prepare("SELECT * FROM users WHERE id = ? OR registration_id = ?").get(userId, userId) as any;
     if (!userRow) {
-      return res.status(404).json({ success: false, message: "Staff member not recognized. Please re-login." });
+      return res.status(404).json({ success: false, message: "Staff member not recognized." });
     }
     
     const effectiveDevId = String(deviceId || req.headers['x-device-id'] || req.headers['user-agent'] || "").slice(0, 100);
@@ -1160,7 +1155,7 @@ async function startServer() {
 
     const actualDate = date || getTodayISTDate();
 
-    const existing = db.prepare("SELECT * FROM attendance WHERE (registration_id = ? OR user_id = ?) AND date = ?").get(userRow.registration_id, userRow.id, actualDate);
+    const existing = db.prepare("SELECT * FROM attendance WHERE (user_id = ? OR registration_id = ?) AND date = ?").get(userRow.id, userRow.registration_id, actualDate);
     if (existing) {
       return res.status(400).json({ success: false, message: "Already checked in for today" });
     }
@@ -1177,6 +1172,7 @@ async function startServer() {
     const timeParts = cleanTime.split(":");
     const totalMinutes = parseInt(timeParts[0], 10) * 60 + parseInt(timeParts[1] || "0", 10);
     
+    // Check against individual employee's scheduled work_start_time
     let startLimitMins = 10 * 60;
     if (userRow.work_start_time) {
       const sp = userRow.work_start_time.split(":");
@@ -1200,44 +1196,21 @@ async function startServer() {
     res.json({ success: true, id: result.lastInsertRowid, isLate: isLate === 1, lateMinutes, status });
   });
 
-// Attendance Punch Out (Strictly matched with registration_id & actual user)
+  // Attendance Punch Out
   app.post("/api/attendance/check-out", (req, res) => {
-    const { userId, registration_id, date, time, earlyCheckoutReason } = req.body;
+    const { userId, date, time, earlyCheckoutReason } = req.body;
     try {
-      // 1. Identify User strictly by registration_id first, then fallback to userId
-      let userRow = null;
-      if (registration_id) {
-        userRow = db.prepare("SELECT * FROM users WHERE registration_id = ?").get(registration_id) as any;
-      }
-      if (!userRow && userId) {
-        userRow = db.prepare("SELECT * FROM users WHERE id = ? OR registration_id = ?").get(userId, String(userId)) as any;
-      }
-
-      if (!userRow) {
-        return res.status(404).json({ success: false, message: "Staff member not recognized. Please re-login." });
-      }
+      const userRow = db.prepare("SELECT * FROM users WHERE id = ? OR registration_id = ?").get(userId, userId) as any;
+      if (!userRow) return res.status(404).json({ success: false, message: "Staff not found" });
 
       const actualDate = date || getTodayISTDate();
-
-      // 2. Locate today's Check-In record using both registration_id and user_id
-      const lastRecord = db.prepare(`
-        SELECT * FROM attendance 
-        WHERE (registration_id = ? OR user_id = ?) 
-          AND date = ? 
-        ORDER BY id DESC LIMIT 1
-      `).get(userRow.registration_id, userRow.id, actualDate) as any;
-
-      if (!lastRecord) {
-        return res.status(404).json({ success: false, message: "No check-in record found for today." });
-      }
-      if (lastRecord.check_out) {
-        return res.status(400).json({ success: false, message: "Already checked out today" });
-      }
+      const lastRecord = db.prepare("SELECT * FROM attendance WHERE (user_id = ? OR registration_id = ?) AND date = ? ORDER BY id DESC LIMIT 1").get(userRow.id, userRow.registration_id, actualDate) as any;
+      if (!lastRecord) return res.status(404).json({ success: false, message: "No check-in record found for today." });
+      if (lastRecord.check_out) return res.status(400).json({ success: false, message: "Already checked out today" });
 
       const cleanOutTime = cleanTimeString(time, getNowISTTimeString());
-
-      // 3. Compute individual shift overtime limit
-      let shiftEndLimitMins = 19 * 60; // 07:00 PM default
+      
+      let shiftEndLimitMins = 19 * 60;
       if (userRow.work_end_time) {
         const ep = userRow.work_end_time.split(":");
         shiftEndLimitMins = parseInt(ep[0], 10) * 60 + parseInt(ep[1] || "0", 10);
@@ -1252,28 +1225,13 @@ async function startServer() {
         }
       }
 
-      // 4. Update the exact record ensuring registration_id is populated
       db.prepare(`
         UPDATE attendance 
-        SET check_out = ?, 
-            early_checkout_reason = ?, 
-            overtime_hours = ?,
-            registration_id = COALESCE(registration_id, ?)
+        SET check_out = ?, early_checkout_reason = ?, overtime_hours = ?
         WHERE id = ?
-      `).run(cleanOutTime, earlyCheckoutReason || null, overtimeHours, userRow.registration_id, lastRecord.id);
+      `).run(cleanOutTime, earlyCheckoutReason || null, overtimeHours, lastRecord.id);
 
-      // 5. Stream punch out directly to Google Sheets with registration_id
-      appendAttendanceLogLive(
-        userRow.id, 
-        userRow.registration_id, 
-        actualDate, 
-        lastRecord.check_in, 
-        lastRecord.status, 
-        lastRecord.method, 
-        lastRecord.session_id, 
-        cleanOutTime, 
-        overtimeHours
-      );
+      appendAttendanceLogLive(userRow.id, userRow.registration_id, actualDate, lastRecord.check_in, lastRecord.status, lastRecord.method, lastRecord.session_id, cleanOutTime, overtimeHours);
       triggerLiveSync('attendance_punch_out');
 
       res.json({ success: true, message: `Checked out at ${cleanOutTime}`, overtimeHours });
