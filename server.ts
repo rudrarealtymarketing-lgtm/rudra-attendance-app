@@ -1122,9 +1122,9 @@ async function startServer() {
     }
   });
 
-  // Attendance Punch In (Strictly binds with user's registration_id)
+// Attendance Punch In
   app.post("/api/attendance/check-in", (req, res) => {
-    const { userId, date, time, location, method, sessionId, deviceId, photoUrl, lateReason } = req.body;
+    const { userId, registration_id, date, time, location, method, sessionId, deviceId, photoUrl, lateReason } = req.body;
     
     if (!location || !location.latitude || !location.longitude) {
       return res.status(400).json({
@@ -1133,9 +1133,17 @@ async function startServer() {
       });
     }
 
-    const userRow = db.prepare("SELECT * FROM users WHERE id = ? OR registration_id = ?").get(userId, userId) as any;
+    // First search by registration_id, then fallback to id to prevent cross-user mapping
+    let userRow = null;
+    if (registration_id) {
+      userRow = db.prepare("SELECT * FROM users WHERE registration_id = ?").get(registration_id) as any;
+    }
+    if (!userRow && userId) {
+      userRow = db.prepare("SELECT * FROM users WHERE id = ? OR registration_id = ?").get(userId, String(userId)) as any;
+    }
+
     if (!userRow) {
-      return res.status(404).json({ success: false, message: "Staff member not recognized." });
+      return res.status(404).json({ success: false, message: "Staff member not recognized. Please re-login." });
     }
     
     const effectiveDevId = String(deviceId || req.headers['x-device-id'] || req.headers['user-agent'] || "").slice(0, 100);
@@ -1152,7 +1160,7 @@ async function startServer() {
 
     const actualDate = date || getTodayISTDate();
 
-    const existing = db.prepare("SELECT * FROM attendance WHERE (user_id = ? OR registration_id = ?) AND date = ?").get(userRow.id, userRow.registration_id, actualDate);
+    const existing = db.prepare("SELECT * FROM attendance WHERE (registration_id = ? OR user_id = ?) AND date = ?").get(userRow.registration_id, userRow.id, actualDate);
     if (existing) {
       return res.status(400).json({ success: false, message: "Already checked in for today" });
     }
@@ -1169,7 +1177,6 @@ async function startServer() {
     const timeParts = cleanTime.split(":");
     const totalMinutes = parseInt(timeParts[0], 10) * 60 + parseInt(timeParts[1] || "0", 10);
     
-    // Check against individual employee's scheduled work_start_time
     let startLimitMins = 10 * 60;
     if (userRow.work_start_time) {
       const sp = userRow.work_start_time.split(":");
@@ -1193,21 +1200,44 @@ async function startServer() {
     res.json({ success: true, id: result.lastInsertRowid, isLate: isLate === 1, lateMinutes, status });
   });
 
-  // Attendance Punch Out
+// Attendance Punch Out (Strictly matched with registration_id & actual user)
   app.post("/api/attendance/check-out", (req, res) => {
-    const { userId, date, time, earlyCheckoutReason } = req.body;
+    const { userId, registration_id, date, time, earlyCheckoutReason } = req.body;
     try {
-      const userRow = db.prepare("SELECT * FROM users WHERE id = ? OR registration_id = ?").get(userId, userId) as any;
-      if (!userRow) return res.status(404).json({ success: false, message: "Staff not found" });
+      // 1. Identify User strictly by registration_id first, then fallback to userId
+      let userRow = null;
+      if (registration_id) {
+        userRow = db.prepare("SELECT * FROM users WHERE registration_id = ?").get(registration_id) as any;
+      }
+      if (!userRow && userId) {
+        userRow = db.prepare("SELECT * FROM users WHERE id = ? OR registration_id = ?").get(userId, String(userId)) as any;
+      }
+
+      if (!userRow) {
+        return res.status(404).json({ success: false, message: "Staff member not recognized. Please re-login." });
+      }
 
       const actualDate = date || getTodayISTDate();
-      const lastRecord = db.prepare("SELECT * FROM attendance WHERE (user_id = ? OR registration_id = ?) AND date = ? ORDER BY id DESC LIMIT 1").get(userRow.id, userRow.registration_id, actualDate) as any;
-      if (!lastRecord) return res.status(404).json({ success: false, message: "No check-in record found for today." });
-      if (lastRecord.check_out) return res.status(400).json({ success: false, message: "Already checked out today" });
+
+      // 2. Locate today's Check-In record using both registration_id and user_id
+      const lastRecord = db.prepare(`
+        SELECT * FROM attendance 
+        WHERE (registration_id = ? OR user_id = ?) 
+          AND date = ? 
+        ORDER BY id DESC LIMIT 1
+      `).get(userRow.registration_id, userRow.id, actualDate) as any;
+
+      if (!lastRecord) {
+        return res.status(404).json({ success: false, message: "No check-in record found for today." });
+      }
+      if (lastRecord.check_out) {
+        return res.status(400).json({ success: false, message: "Already checked out today" });
+      }
 
       const cleanOutTime = cleanTimeString(time, getNowISTTimeString());
-      
-      let shiftEndLimitMins = 19 * 60;
+
+      // 3. Compute individual shift overtime limit
+      let shiftEndLimitMins = 19 * 60; // 07:00 PM default
       if (userRow.work_end_time) {
         const ep = userRow.work_end_time.split(":");
         shiftEndLimitMins = parseInt(ep[0], 10) * 60 + parseInt(ep[1] || "0", 10);
@@ -1222,13 +1252,28 @@ async function startServer() {
         }
       }
 
+      // 4. Update the exact record ensuring registration_id is populated
       db.prepare(`
         UPDATE attendance 
-        SET check_out = ?, early_checkout_reason = ?, overtime_hours = ?
+        SET check_out = ?, 
+            early_checkout_reason = ?, 
+            overtime_hours = ?,
+            registration_id = COALESCE(registration_id, ?)
         WHERE id = ?
-      `).run(cleanOutTime, earlyCheckoutReason || null, overtimeHours, lastRecord.id);
+      `).run(cleanOutTime, earlyCheckoutReason || null, overtimeHours, userRow.registration_id, lastRecord.id);
 
-      appendAttendanceLogLive(userRow.id, userRow.registration_id, actualDate, lastRecord.check_in, lastRecord.status, lastRecord.method, lastRecord.session_id, cleanOutTime, overtimeHours);
+      // 5. Stream punch out directly to Google Sheets with registration_id
+      appendAttendanceLogLive(
+        userRow.id, 
+        userRow.registration_id, 
+        actualDate, 
+        lastRecord.check_in, 
+        lastRecord.status, 
+        lastRecord.method, 
+        lastRecord.session_id, 
+        cleanOutTime, 
+        overtimeHours
+      );
       triggerLiveSync('attendance_punch_out');
 
       res.json({ success: true, message: `Checked out at ${cleanOutTime}`, overtimeHours });
